@@ -60,4 +60,26 @@ fn render(frame: &mut Frame, _app: &App) {
         .alignment(Alignment::Center);
 
     frame.render_widget(paragraph, frame.area());
+
+    let chunks = Layout::vertical([
+        Constraint::Ratio(1, 3),
+        Constraint::Ratio(1, 3),
+        Constraint::Ratio(1, 3),
+    ])
+    .split(frame.area());
+
+    let todo_block = Block::default()
+        .title(" TODO ")
+        .borders(Borders::ALL);
+    frame.render_widget(todo_block, chunks[0]);
+
+    let doing_block = Block::default()
+        .title(" DOING ")
+        .borders(Borders::ALL);
+    frame.render_widget(doing_block, chunks[1]);
+
+    let done_block = Block::default()
+        .title(" DONE ")
+        .borders(Borders::ALL);
+    frame.render_widget(done_block, chunks[2]);
 }
