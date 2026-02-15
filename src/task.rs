@@ -79,4 +79,11 @@ impl Task {
         tasks.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         Ok(tasks)
     }
+
+
+    pub fn update_status(&mut self, status: TaskStatus) {
+        self.status = status;
+        self.updated_at = Utc::now();
+        let _ = self.save();
+    }
 }

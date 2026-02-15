@@ -10,6 +10,8 @@ use crossterm::{
 use ratatui::prelude::*;
 use task::Task;
 
+use crate::task::TaskStatus;
+
 #[derive(PartialEq)]
 pub enum Mode {
     Normal,
@@ -47,6 +49,7 @@ impl App {
                 }
                 KeyCode::Char('j') | KeyCode::Down => self.select_next(),
                 KeyCode::Char('k') | KeyCode::Up => self.select_previous(),
+                KeyCode::Char('n') => self.forward_status(),
                 _ => {}
             },
             Mode::Editing => match key_code {
@@ -95,6 +98,17 @@ impl App {
             Some(i) => i.saturating_sub(1),
             None => 0,
         });
+    }
+
+    fn forward_status(&mut self) {
+        if let Some(index) = self.selected_index {
+            let next_status = match self.tasks[index].status {
+                TaskStatus::Todo => TaskStatus::Doing,
+                TaskStatus::Doing => TaskStatus::Done,
+                TaskStatus::Done => return,
+            };
+            self.tasks[index].update_status(next_status);
+        }
     }
 }
 
