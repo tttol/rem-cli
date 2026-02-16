@@ -139,4 +139,21 @@ impl Task {
         let _ = fs::rename(old_path, self.file_path());
         let _ = self.save();
     }
+
+    pub fn sort(tasks: Vec<Task>) -> Vec<Task> {
+        let mut todos = Self::filter_by_status(&tasks, TaskStatus::Todo);
+        let mut doings = Self::filter_by_status(&tasks, TaskStatus::Doing);
+        let mut dones = Self::filter_by_status(&tasks, TaskStatus::Done);
+        todos.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        doings.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        dones.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        [todos, doings, dones].concat()
+    }
+
+    fn filter_by_status(tasks: &[Task], status: TaskStatus) -> Vec<Task> {
+        tasks.iter()
+            .filter(|t| t.status == status)
+            .cloned()
+            .collect()
+    }
 }

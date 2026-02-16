@@ -48,16 +48,7 @@ impl App {
             },
             Mode::Editing => match key_code {
                 KeyCode::Enter => {
-                    if !self.input_buffer.is_empty() {
-                        let task = Task::new(self.input_buffer.clone());
-                        let _ = task.save();
-                        self.tasks.push(task);
-                        if self.selected_index.is_none() {
-                            self.selected_index = Some(0);
-                        }
-                    }
-                    self.input_buffer.clear();
-                    self.input_mode = Mode::Normal;
+                    self.add_task();
                 }
                 KeyCode::Esc => {
                     self.input_buffer.clear();
@@ -102,7 +93,23 @@ impl App {
                 TaskStatus::Done => return,
             };
             self.tasks[index].update_status(next_status);
+            self.tasks = Task::sort(self.tasks.clone());
         }
+    }
+
+    fn add_task(&mut self) {
+        if !self.input_buffer.is_empty() {
+            let new_task = Task::new(self.input_buffer.clone());
+            let _ = new_task.save();
+            self.tasks.push(new_task);
+            self.tasks = Task::sort(self.tasks.clone());
+            if self.selected_index.is_none() {
+                self.selected_index = Some(0);
+            }
+        }
+        self.input_buffer.clear();
+        self.input_mode = Mode::Normal;
+
     }
 
     fn toggle_done(&mut self) {
