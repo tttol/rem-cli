@@ -47,7 +47,7 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 ### macOS
 ```bash
 brew tap tttol/tap
-brew install rem-cli
+brew install tttol/tap/rem-cli
 ```
 
 ### Linux
