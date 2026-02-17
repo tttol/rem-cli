@@ -60,7 +60,7 @@ impl Task {
         Self::base_dir().join(status.dir_name())
     }
 
-    fn file_path(&self) -> PathBuf {
+    pub fn file_path(&self) -> PathBuf {
         Self::status_dir(&self.status).join(format!("{}.md", self.id))
     }
 

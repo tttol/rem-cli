@@ -3,6 +3,7 @@ mod render;
 mod task;
 
 use std::io;
+use std::process::Command;
 use crossterm::{
     event::{self, Event, KeyEventKind},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -19,6 +20,7 @@ fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut app = App::new();
 
+    // Polling events
     while !app.should_quit {
         terminal.draw(|frame| render::render(frame, &app))?;
 
@@ -27,6 +29,16 @@ fn main() -> io::Result<()> {
             && key.kind == KeyEventKind::Press
         {
             app.handle_key_event(key.code);
+        }
+
+        if let Some(path) = app.open_file.take() {
+            disable_raw_mode()?;
+            io::stdout().execute(LeaveAlternateScreen)?;
+            let _ = Command::new("nvim").arg(&path).status();
+            enable_raw_mode()?;
+            io::stdout().execute(EnterAlternateScreen)?;
+            terminal.clear()?;
+            app.update_preview();
         }
     }
 

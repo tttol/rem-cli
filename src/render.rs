@@ -6,7 +6,7 @@ use crate::app::{App, Mode};
 use crate::task::TaskStatus;
 
 pub fn render(frame: &mut Frame, app: &App) {
-    let main_chunks = if app.input_mode == Mode::Editing {
+    let outer = if app.input_mode == Mode::Editing {
         Layout::vertical([
             Constraint::Min(0),
             Constraint::Length(3),
@@ -20,23 +20,30 @@ pub fn render(frame: &mut Frame, app: &App) {
         .split(frame.area())
     };
 
-    let chunks = if app.done_loaded {
+    // Left 30% task lists, Right 70% preview
+    let h_chunks = Layout::horizontal([
+        Constraint::Percentage(30),
+        Constraint::Percentage(70),
+    ])
+    .split(outer[0]);
+
+    // Left: task list panels
+    let list_chunks = if app.done_loaded {
         Layout::vertical([
             Constraint::Ratio(1, 3),
             Constraint::Ratio(1, 3),
             Constraint::Ratio(1, 3),
         ])
-        .split(main_chunks[0])
+        .split(h_chunks[0])
     } else {
         Layout::vertical([
             Constraint::Ratio(1, 2),
             Constraint::Ratio(1, 2),
             Constraint::Length(3),
         ])
-        .split(main_chunks[0])
+        .split(h_chunks[0])
     };
 
-    // Build filtered lists with selected index mapping
     let active_statuses = [
         (TaskStatus::Todo, " TODO "),
         (TaskStatus::Doing, " DOING "),
@@ -58,7 +65,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             .highlight_style(Style::default().bg(Color::DarkGray));
         let mut state = ListState::default();
         state.select(selected_in_group);
-        frame.render_stateful_widget(list, chunks[i], &mut state);
+        frame.render_stateful_widget(list, list_chunks[i], &mut state);
     }
 
     if app.done_loaded {
@@ -78,19 +85,25 @@ pub fn render(frame: &mut Frame, app: &App) {
             .highlight_style(Style::default().bg(Color::DarkGray));
         let mut state = ListState::default();
         state.select(selected_in_group);
-        frame.render_stateful_widget(list, chunks[2], &mut state);
+        frame.render_stateful_widget(list, list_chunks[2], &mut state);
     } else {
         let block = Block::default().title(" DONE (d to load) ").borders(Borders::ALL);
-        frame.render_widget(block, chunks[2]);
+        frame.render_widget(block, list_chunks[2]);
     }
 
-    // Input area (shown only in editing mode)
+    // Right: preview panel
+    let preview = Paragraph::new(app.preview_content.as_str())
+        .block(Block::default().title(" Preview ").borders(Borders::ALL))
+        .wrap(ratatui::widgets::Wrap { trim: false });
+    frame.render_widget(preview, h_chunks[1]);
+
+    // Bottom: input or help
     if app.input_mode == Mode::Editing {
         let input = Paragraph::new(app.input_buffer.as_str())
             .block(Block::default().title(" New Task (Enter: confirm, Esc: cancel) ").borders(Borders::ALL));
-        frame.render_widget(input, main_chunks[1]);
+        frame.render_widget(input, outer[1]);
     } else {
-        let help = Paragraph::new(" a: add task | j/k: select | n: forward status | d: toggle done | q: quit ");
-        frame.render_widget(help, main_chunks[1]);
+        let help = Paragraph::new(" a: add | j/k: select | n: forward | d: toggle done | q: quit ");
+        frame.render_widget(help, outer[1]);
     }
 }

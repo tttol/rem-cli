@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::PathBuf;
 use crossterm::event::KeyCode;
 
 use crate::task::{Task, TaskStatus};
@@ -15,6 +17,8 @@ pub struct App {
     pub tasks: Vec<Task>,
     pub selected_index: Option<usize>,
     pub done_loaded: bool,
+    pub preview_content: String,
+    pub open_file: Option<PathBuf>,
 }
 
 impl App {
@@ -22,6 +26,10 @@ impl App {
         let mut tasks = Task::load_todo().unwrap_or_default();
         tasks.extend(Task::load_doing().unwrap_or_default());
         let selected_index = if tasks.is_empty() { None } else { Some(0) };
+        let preview_content = match selected_index {
+            Some(i) => fs::read_to_string(tasks[i].file_path()).unwrap_or_default(),
+            None => String::new(),
+        };
         Self {
             should_quit: false,
             input_mode: Mode::Normal,
@@ -29,6 +37,8 @@ impl App {
             tasks,
             selected_index,
             done_loaded: false,
+            preview_content,
+            open_file: None,
         }
     }
 
@@ -44,6 +54,7 @@ impl App {
                 KeyCode::Char('k') | KeyCode::Up => self.select_previous(),
                 KeyCode::Char('n') => self.forward_status(),
                 KeyCode::Char('d') => self.toggle_done(),
+                KeyCode::Enter => self.open_task(),
                 _ => {}
             },
             Mode::Editing => match key_code {
@@ -73,6 +84,7 @@ impl App {
             Some(i) => (i + 1).min(self.tasks.len() - 1),
             None => 0,
         });
+        self.update_preview();
     }
 
     fn select_previous(&mut self) {
@@ -83,6 +95,20 @@ impl App {
             Some(i) => i.saturating_sub(1),
             None => 0,
         });
+        self.update_preview();
+    }
+
+    fn open_task(&mut self) {
+        if let Some(index) = self.selected_index {
+            self.open_file = Some(self.tasks[index].file_path());
+        }
+    }
+
+    pub fn update_preview(&mut self) {
+        self.preview_content = match self.selected_index {
+            Some(index) => fs::read_to_string(self.tasks[index].file_path()).unwrap_or_default(),
+            None => String::new(),
+        };
     }
 
     fn forward_status(&mut self) {
@@ -94,6 +120,7 @@ impl App {
             };
             self.tasks[index].update_status(next_status);
             self.tasks = Task::sort(self.tasks.clone());
+            self.update_preview();
         }
     }
 
@@ -109,7 +136,7 @@ impl App {
         }
         self.input_buffer.clear();
         self.input_mode = Mode::Normal;
-
+        self.update_preview();
     }
 
     fn toggle_done(&mut self) {
@@ -130,5 +157,6 @@ impl App {
                 self.selected_index = Some(self.tasks.len() - 1);
             }
         }
+        self.update_preview();
     }
 }
