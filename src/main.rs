@@ -14,6 +14,11 @@ use ratatui::prelude::*;
 use crate::app::App;
 
 fn main() -> io::Result<()> {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("rem {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
 
