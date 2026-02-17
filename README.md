@@ -4,7 +4,7 @@
 
 A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember". All data is stored locally on the filesystem, keeping your sensitive information private.
 
-## Highlights
+## ✨ Highlights
 
 - **Written in Rust** - Fast, safe, and reliable
 - **Local-first** - All TODO data stored on your filesystem, no cloud sync
@@ -13,7 +13,7 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 - **Preview panel** - View task details without leaving the TUI
 - **Neovim integration** - Edit task files directly in neovim
 
-## Why rem-cli?
+## 🤔 Why rem-cli?
 
 **Before:** Scattering TODOs across multiple apps, cloud services, and sticky notes...
 
@@ -23,7 +23,7 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 - Sensitive tasks stay on your machine
 - Markdown files you can version control or back up however you like
 
-## Features
+## 🚀 Features
 
 - **Three-column status management** - TODO / DOING / DONE
 - **Keyboard-driven workflow** - Add, navigate, and update tasks without touching the mouse
@@ -31,7 +31,7 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 - **Lazy loading** - DONE tasks are loaded on demand to keep startup fast
 - **Neovim integration** - Press Enter to open and edit a task file in neovim
 
-## Keybindings
+## ⌨️ Keybindings
 
 | Key | Action |
 |-----|--------|
@@ -42,7 +42,7 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 | `Enter` | Open task file in neovim |
 | `q` / `Esc` | Quit |
 
-## Installation
+## 📦 Installation
 
 ### macOS
 ```bash
@@ -72,7 +72,7 @@ cd rem-cli
 cargo install --path .
 ```
 
-## Data Storage
+## 💾 Data Storage
 
 Tasks are stored as markdown files under `~/.rem-cli/tasks/` with directories representing status:
 
@@ -88,7 +88,7 @@ Tasks are stored as markdown files under `~/.rem-cli/tasks/` with directories re
 
 Each file contains YAML frontmatter with task metadata. You can freely edit, back up, or version control these files.
 
-## Community
+## 🌟 Community
 
 - **[Report issues](https://github.com/tttol/rem-cli/issues)** - Found a bug? Let us know
 - **Contributing** - PRs are welcome!
