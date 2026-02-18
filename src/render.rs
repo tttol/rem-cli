@@ -5,6 +5,14 @@ use ratatui::{
 use crate::app::{App, Mode};
 use crate::task::TaskStatus;
 
+/// Renders the entire TUI layout.
+///
+/// Layout structure:
+/// - Left 30%: Task list panels (TODO, DOING, DONE)
+/// - Right 70%: Preview panel showing the selected task's markdown content
+/// - Bottom: Input field (Editing mode) or keybinding help (Normal mode)
+///
+/// The DONE panel is minimized to a border-only row when `done_loaded` is false.
 pub fn render(frame: &mut Frame, app: &App) {
     let outer = if app.input_mode == Mode::Editing {
         Layout::vertical([
@@ -60,8 +68,13 @@ pub fn render(frame: &mut Frame, app: &App) {
                 ListItem::new(t.name.as_str())
             })
             .collect();
+        let border_style = if selected_in_group.is_some() {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default()
+        };
         let list = List::new(items)
-            .block(Block::default().title(*title).borders(Borders::ALL))
+            .block(Block::default().title(*title).borders(Borders::ALL).border_style(border_style))
             .highlight_style(Style::default().bg(Color::DarkGray));
         let mut state = ListState::default();
         state.select(selected_in_group);
@@ -80,8 +93,13 @@ pub fn render(frame: &mut Frame, app: &App) {
                 ListItem::new(t.name.as_str())
             })
             .collect();
+        let border_style = if selected_in_group.is_some() {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default()
+        };
         let list = List::new(items)
-            .block(Block::default().title(" DONE ").borders(Borders::ALL))
+            .block(Block::default().title(" DONE ").borders(Borders::ALL).border_style(border_style))
             .highlight_style(Style::default().bg(Color::DarkGray));
         let mut state = ListState::default();
         state.select(selected_in_group);
