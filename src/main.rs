@@ -13,6 +13,11 @@ use ratatui::prelude::*;
 
 use crate::app::App;
 
+/// Entry point for the rem TUI application.
+///
+/// Handles `--version` / `-V` flags, sets up the terminal (raw mode, alternate screen),
+/// runs the event loop, and restores the terminal on exit.
+/// When `app.open_file` is set, temporarily exits the TUI to open the file in neovim.
 fn main() -> io::Result<()> {
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("rem {}", env!("CARGO_PKG_VERSION"));

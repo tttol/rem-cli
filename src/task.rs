@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Represents the lifecycle status of a task.
 #[derive(Clone, PartialEq)]
 pub enum TaskStatus {
     Todo,
@@ -13,6 +14,7 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
+    /// Returns the directory name corresponding to this status (e.g. `"todo"`, `"doing"`, `"done"`).
     fn dir_name(&self) -> &str {
         match self {
             TaskStatus::Todo => "todo",
@@ -23,6 +25,9 @@ impl TaskStatus {
 
 }
 
+/// Internal representation of the YAML frontmatter stored in each task's markdown file.
+///
+/// Does not include `status`, which is determined by the directory the file resides in.
 #[derive(Clone, Serialize, Deserialize)]
 struct TaskFrontmatter {
     id: Uuid,
@@ -31,6 +36,7 @@ struct TaskFrontmatter {
     updated_at: DateTime<Utc>,
 }
 
+/// A TODO task with metadata and lifecycle status.
 #[derive(Clone)]
 pub struct Task {
     pub id: Uuid,
@@ -41,6 +47,7 @@ pub struct Task {
 }
 
 impl Task {
+    /// Creates a new task with the given name and TODO status.
     pub fn new(name: String) -> Self {
         let now = Utc::now();
         Self {
@@ -52,18 +59,22 @@ impl Task {
         }
     }
 
+    /// Returns the base directory for all task files (`~/.rem-cli/tasks/`).
     fn base_dir() -> PathBuf {
         dirs::home_dir().unwrap().join(".rem-cli/tasks")
     }
 
+    /// Returns the directory path for a given status (e.g. `~/.rem-cli/tasks/todo/`).
     fn status_dir(status: &TaskStatus) -> PathBuf {
         Self::base_dir().join(status.dir_name())
     }
 
+    /// Returns the full file path for this task's markdown file.
     pub fn file_path(&self) -> PathBuf {
         Self::status_dir(&self.status).join(format!("{}.md", self.id))
     }
 
+    /// Converts this task into a `TaskFrontmatter` for serialization.
     fn frontmatter(&self) -> TaskFrontmatter {
         TaskFrontmatter {
             id: self.id,
@@ -73,6 +84,7 @@ impl Task {
         }
     }
 
+    /// Saves this task as a markdown file with YAML frontmatter to the appropriate status directory.
     pub fn save(&self) -> io::Result<()> {
         let path = self.file_path();
         fs::create_dir_all(path.parent().unwrap())?;
@@ -81,6 +93,7 @@ impl Task {
         fs::write(path, content)
     }
 
+    /// Loads a task from a markdown file, assigning the given status based on its directory.
     fn load(path: &PathBuf, status: TaskStatus) -> io::Result<Self> {
         let content = fs::read_to_string(path)?;
         let yaml = content
@@ -99,18 +112,22 @@ impl Task {
         })
     }
 
+    /// Loads all tasks from the `todo/` directory.
     pub fn load_todo() -> io::Result<Vec<Self>> {
         Self::load_by_status(&[TaskStatus::Todo])
     }
 
+    /// Loads all tasks from the `doing/` directory.
     pub fn load_doing() -> io::Result<Vec<Self>> {
         Self::load_by_status(&[TaskStatus::Doing])
     }
 
+    /// Loads all tasks from the `done/` directory.
     pub fn load_done() -> io::Result<Vec<Self>> {
         Self::load_by_status(&[TaskStatus::Done])
     }
 
+    /// Loads tasks from the directories corresponding to the given statuses, sorted by `created_at`.
     fn load_by_status(statuses: &[TaskStatus]) -> io::Result<Vec<Self>> {
         let mut tasks = Vec::new();
         for status in statuses {
@@ -131,6 +148,7 @@ impl Task {
         Ok(tasks)
     }
 
+    /// Changes this task's status and moves the file to the corresponding directory.
     pub fn update_status(&mut self, new_status: TaskStatus) {
         let old_path = self.file_path();
         self.status = new_status;
@@ -140,6 +158,7 @@ impl Task {
         let _ = self.save();
     }
 
+    /// Sorts tasks by status group (TODO, DOING, DONE) and by `created_at` within each group.
     pub fn sort(tasks: Vec<Task>) -> Vec<Task> {
         let mut todos = Self::filter_by_status(&tasks, TaskStatus::Todo);
         let mut doings = Self::filter_by_status(&tasks, TaskStatus::Doing);
@@ -150,6 +169,7 @@ impl Task {
         [todos, doings, dones].concat()
     }
 
+    /// Filters tasks by the given status, returning cloned copies.
     fn filter_by_status(tasks: &[Task], status: TaskStatus) -> Vec<Task> {
         tasks.iter()
             .filter(|t| t.status == status)
