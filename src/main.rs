@@ -1,7 +1,3 @@
-mod app;
-mod render;
-mod task;
-
 use std::io;
 use std::process::Command;
 use crossterm::{
@@ -10,8 +6,8 @@ use crossterm::{
     ExecutableCommand,
 };
 use ratatui::prelude::*;
-
-use crate::app::App;
+use rem_cli::app::App;
+use rem_cli::render;
 
 /// Entry point for the rem TUI application.
 ///

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Represents the lifecycle status of a task.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TaskStatus {
     Todo,
     Doing,
@@ -175,5 +175,115 @@ impl Task {
             .filter(|t| t.status == status)
             .cloned()
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn file_path_contains_status_dir_and_uuid() {
+        // GIVEN: a task with TODO status
+        let task = Task::new("path test".to_string());
+
+        // WHEN: file_path is called
+        let path = task.file_path();
+
+        // THEN: the path contains /todo/ and ends with <uuid>.md
+        assert!(path.to_str().unwrap().contains("/todo/"));
+        assert!(path.to_str().unwrap().ends_with(&format!("{}.md", task.id)));
+    }
+
+    #[test]
+    fn frontmatter_excludes_status() {
+        // GIVEN: a task
+        let task = Task::new("frontmatter test".to_string());
+
+        // WHEN: frontmatter is serialized to YAML
+        let fm = task.frontmatter();
+        let yaml = serde_yaml::to_string(&fm).unwrap();
+
+        // THEN: it contains id, name, timestamps but not status
+        assert_eq!(fm.id, task.id);
+        assert_eq!(fm.name, "frontmatter test");
+        assert!(!yaml.contains("status"));
+    }
+
+    #[test]
+    fn sort_groups_by_status_and_orders_by_created_at() {
+        // GIVEN: tasks with mixed statuses created in different order
+        let mut task_doing = Task::new("doing".to_string());
+        task_doing.status = TaskStatus::Doing;
+        thread::sleep(Duration::from_millis(10));
+        let task_todo = Task::new("todo".to_string());
+        thread::sleep(Duration::from_millis(10));
+        let mut task_done = Task::new("done".to_string());
+        task_done.status = TaskStatus::Done;
+
+        // WHEN: sort is called
+        let sorted = Task::sort(vec![task_done, task_doing, task_todo]);
+
+        // THEN: tasks are grouped by status (TODO, DOING, DONE)
+        assert_eq!(sorted[0].status, TaskStatus::Todo);
+        assert_eq!(sorted[1].status, TaskStatus::Doing);
+        assert_eq!(sorted[2].status, TaskStatus::Done);
+    }
+
+    #[test]
+    fn filter_by_status_returns_matching_tasks() {
+        // GIVEN: tasks with mixed statuses
+        let todo = Task::new("todo".to_string());
+        let mut doing = Task::new("doing".to_string());
+        doing.status = TaskStatus::Doing;
+        let tasks = vec![todo, doing];
+
+        // WHEN: filter_by_status is called with Todo
+        let filtered = Task::filter_by_status(&tasks, TaskStatus::Todo);
+
+        // THEN: only TODO tasks are returned
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "todo");
+    }
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        // GIVEN: a task saved to disk
+        let task = Task::new("roundtrip test".to_string());
+        task.save().unwrap();
+
+        // WHEN: Task::load is called with the file path
+        let loaded = Task::load(&task.file_path(), TaskStatus::Todo).unwrap();
+
+        // THEN: the loaded task matches the original
+        assert_eq!(loaded.id, task.id);
+        assert_eq!(loaded.name, "roundtrip test");
+        assert_eq!(loaded.status, TaskStatus::Todo);
+
+        let _ = fs::remove_file(task.file_path());
+    }
+
+    #[test]
+    fn update_status_moves_file_between_directories() {
+        // GIVEN: a saved task with TODO status
+        let mut task = Task::new("status move test".to_string());
+        task.save().unwrap();
+        let old_path = task.file_path();
+        assert!(old_path.exists());
+
+        // WHEN: update_status is called with Doing
+        thread::sleep(Duration::from_millis(10));
+        let before_update = task.updated_at;
+        task.update_status(TaskStatus::Doing);
+
+        // THEN: the file is moved to doing/ directory and updated_at is refreshed
+        assert!(!old_path.exists());
+        assert!(task.file_path().exists());
+        assert!(task.file_path().to_str().unwrap().contains("/doing/"));
+        assert!(task.updated_at > before_update);
+
+        let _ = fs::remove_file(task.file_path());
     }
 }
