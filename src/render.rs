@@ -120,6 +120,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         let input = Paragraph::new(app.input_buffer.as_str())
             .block(Block::default().title(" New Task (Enter: confirm, Esc: cancel) ").borders(Borders::ALL));
         frame.render_widget(input, outer[1]);
+        frame.set_cursor_position((
+            outer[1].x + 1 + app.input_buffer.len() as u16,
+            outer[1].y + 1,
+        ));
     } else {
         let help = Paragraph::new(" a: add | j/k: select | n: forward | d: toggle done | q: quit ");
         frame.render_widget(help, outer[1]);
