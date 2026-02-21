@@ -5,6 +5,33 @@ use ratatui::{
 use crate::app::{App, Mode};
 use crate::task::TaskStatus;
 
+/// タスク名をパネル幅に合わせて折り返す。
+/// 単語の途中で折り返さず、スペース区切りでワードラップする。
+fn wrap_task_name(name: &str, width: usize) -> Text<'static> {
+    if width == 0 || name.chars().count() <= width {
+        return Text::from(name.to_string());
+    }
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut current_line = String::new();
+    for word in name.split_whitespace() {
+        let word_len = word.chars().count();
+        let line_len = current_line.chars().count();
+        if line_len == 0 {
+            current_line.push_str(word);
+        } else if line_len + 1 + word_len <= width {
+            current_line.push(' ');
+            current_line.push_str(word);
+        } else {
+            lines.push(Line::from(current_line.clone()));
+            current_line = word.to_string();
+        }
+    }
+    if !current_line.is_empty() {
+        lines.push(Line::from(current_line));
+    }
+    Text::from(lines)
+}
+
 /// Renders the entire TUI layout.
 ///
 /// Layout structure:
@@ -52,6 +79,9 @@ pub fn render(frame: &mut Frame, app: &App) {
         .split(h_chunks[0])
     };
 
+    // ボーダー2文字分を引いたリストパネルの実効幅
+    let list_width = (frame.area().width as usize * 30 / 100).saturating_sub(2);
+
     let active_statuses = [
         (TaskStatus::Todo, " TODO "),
         (TaskStatus::Doing, " DOING "),
@@ -65,7 +95,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 if app.selected_index == Some(global_idx) {
                     selected_in_group = Some(group_idx);
                 }
-                ListItem::new(t.name.as_str())
+                ListItem::new(wrap_task_name(t.name.as_str(), list_width))
             })
             .collect();
         let border_style = if selected_in_group.is_some() {
@@ -90,7 +120,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 if app.selected_index == Some(global_idx) {
                     selected_in_group = Some(group_idx);
                 }
-                ListItem::new(t.name.as_str())
+                ListItem::new(wrap_task_name(t.name.as_str(), list_width))
             })
             .collect();
         let border_style = if selected_in_group.is_some() {
