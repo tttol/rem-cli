@@ -117,6 +117,21 @@ impl App {
         }
     }
 
+    /// Reloads the selected task's metadata from its markdown file to reflect the latest state in memory.
+    fn reload_selected_task(&mut self) {
+        if let Some(index) = self.selected_index {
+            if let Ok(reloaded) = self.tasks[index].reload() {
+                self.tasks[index] = reloaded;
+            }
+        }
+    }
+
+    /// Handles post-edit cleanup after returning from neovim: reloads the task and refreshes the preview.
+    pub fn after_edit(&mut self) {
+        self.reload_selected_task();
+        self.update_preview();
+    }
+
     /// Reads the selected task's markdown file and updates the preview content.
     pub fn update_preview(&mut self) {
         self.preview_content = match self.selected_index {

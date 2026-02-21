@@ -112,6 +112,11 @@ impl Task {
         })
     }
 
+    /// Reloads this task's metadata from its markdown file on disk.
+    pub fn reload(&self) -> io::Result<Self> {
+        Self::load(&self.file_path(), self.status.clone())
+    }
+
     /// Loads all tasks from the `todo/` directory.
     pub fn load_todo() -> io::Result<Vec<Self>> {
         Self::load_by_status(&[TaskStatus::Todo])
