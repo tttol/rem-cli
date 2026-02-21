@@ -94,7 +94,7 @@ impl Task {
     }
 
     /// Loads a task from a markdown file, assigning the given status based on its directory.
-    pub fn load(path: &PathBuf, status: TaskStatus) -> io::Result<Self> {
+    fn load(path: &PathBuf, status: TaskStatus) -> io::Result<Self> {
         let content = fs::read_to_string(path)?;
         let yaml = content
             .trim_start_matches("---\n")
@@ -110,6 +110,11 @@ impl Task {
             created_at: fm.created_at,
             updated_at: fm.updated_at,
         })
+    }
+
+    /// Reloads this task's metadata from its markdown file on disk.
+    pub fn reload(&self) -> io::Result<Self> {
+        Self::load(&self.file_path(), self.status.clone())
     }
 
     /// Loads all tasks from the `todo/` directory.

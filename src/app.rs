@@ -117,14 +117,19 @@ impl App {
         }
     }
 
-    /// nvimで編集したタスクをファイルから再読み込みし、メモリ上の情報を最新化する。
-    pub fn reload_selected_task(&mut self) {
+    /// Reloads the selected task's metadata from its markdown file to reflect the latest state in memory.
+    fn reload_selected_task(&mut self) {
         if let Some(index) = self.selected_index {
-            let task = &self.tasks[index];
-            if let Ok(reloaded) = Task::load(&task.file_path(), task.status.clone()) {
+            if let Ok(reloaded) = self.tasks[index].reload() {
                 self.tasks[index] = reloaded;
             }
         }
+    }
+
+    /// Handles post-edit cleanup after returning from neovim: reloads the task and refreshes the preview.
+    pub fn after_edit(&mut self) {
+        self.reload_selected_task();
+        self.update_preview();
     }
 
     /// Reads the selected task's markdown file and updates the preview content.
