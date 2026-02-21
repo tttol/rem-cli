@@ -94,7 +94,7 @@ impl Task {
     }
 
     /// Loads a task from a markdown file, assigning the given status based on its directory.
-    fn load(path: &PathBuf, status: TaskStatus) -> io::Result<Self> {
+    pub fn load(path: &PathBuf, status: TaskStatus) -> io::Result<Self> {
         let content = fs::read_to_string(path)?;
         let yaml = content
             .trim_start_matches("---\n")

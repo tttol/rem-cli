@@ -44,6 +44,7 @@ fn main() -> io::Result<()> {
             enable_raw_mode()?;
             io::stdout().execute(EnterAlternateScreen)?;
             terminal.clear()?;
+            app.reload_selected_task();
             app.update_preview();
         }
     }

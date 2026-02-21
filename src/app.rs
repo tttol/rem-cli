@@ -117,6 +117,16 @@ impl App {
         }
     }
 
+    /// nvimで編集したタスクをファイルから再読み込みし、メモリ上の情報を最新化する。
+    pub fn reload_selected_task(&mut self) {
+        if let Some(index) = self.selected_index {
+            let task = &self.tasks[index];
+            if let Ok(reloaded) = Task::load(&task.file_path(), task.status.clone()) {
+                self.tasks[index] = reloaded;
+            }
+        }
+    }
+
     /// Reads the selected task's markdown file and updates the preview content.
     pub fn update_preview(&mut self) {
         self.preview_content = match self.selected_index {
