@@ -52,11 +52,21 @@ Tasks are stored as markdown files under `~/.rem-cli/tasks/` with directory-base
 - Preview panel (right 70%) shows the selected task's markdown content, updated on cursor movement
 - Neovim integration: Enter key temporarily exits TUI, opens task file in nvim, then restores TUI
 - `open_file: Option<PathBuf>` is used as a message-passing mechanism between `App` (state) and `main` (terminal control)
+- After returning from neovim, `App::after_edit()` reloads the task metadata from disk and refreshes the preview
+- `Task::reload()` re-reads a task's frontmatter from its markdown file without changing status
+- Task names in the left panel are word-wrapped to fit the panel width (`wrap_task_name`)
+- Editing mode shows a visible cursor at the current input position via `set_cursor_position`
 - `--version` / `-V` flag prints version and exits without entering TUI
 
 ## CI/CD
 
 - GitHub Actions workflow (`.github/workflows/release.yml`) builds release binaries on tag push (`v*`)
+- GitHub Actions workflow (`.github/workflows/test.yml`) runs `cargo test` on push to main and PRs targeting main
 - Targets: macOS (aarch64, x86_64), Linux (x86_64, aarch64)
 - Release artifacts are uploaded to GitHub Releases via `softprops/action-gh-release`
 - Distributed via Homebrew tap (`tttol/tap`)
+
+## Code Reviews
+
+- AI code review results are stored in `docs/reviews/` as markdown files
+- Naming convention: `ai-review-result_issue-<N>_<YYYYMMDD>.md`
