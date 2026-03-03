@@ -53,7 +53,8 @@ fn forward_status_moves_md_file_to_next_directory() {
     let todo_path = task.file_path();
     assert!(todo_path.exists());
     let body = "## Notes\n\nsome content here\n";
-    fs::write(&todo_path, format!("{}{}", fs::read_to_string(&todo_path).unwrap(), body)).unwrap();
+    let existing = fs::read_to_string(&todo_path).unwrap();
+    fs::write(&todo_path, format!("{}{}", existing, body)).unwrap();
 
     // WHEN: navigate to the task and press 'n' to forward status (TODO -> DOING)
     let task_index = app.tasks.iter()

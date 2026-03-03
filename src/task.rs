@@ -288,7 +288,8 @@ mod tests {
         let mut task = Task::new("status move test".to_string());
         task.save().unwrap();
         let body = "## Notes\n\nsome content here\n";
-        fs::write(task.file_path(), format!("{}{}", fs::read_to_string(task.file_path()).unwrap(), body)).unwrap();
+        let existing = fs::read_to_string(task.file_path()).unwrap();
+        fs::write(task.file_path(), format!("{}{}", existing, body)).unwrap();
         let old_path = task.file_path();
         assert!(old_path.exists());
 
