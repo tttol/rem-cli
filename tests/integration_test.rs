@@ -3,7 +3,7 @@ use rem_cli::app::App;
 use rem_cli::task::TaskStatus;
 use std::fs;
 
-/// Scenario 1: Adding a task via rem creates a new md file.
+/// Scenario: Adding a task via rem creates a new md file.
 ///
 /// Simulates pressing 'a', typing a task name, and pressing Enter.
 /// Verifies that a corresponding md file is created in the todo/ directory.
@@ -34,7 +34,7 @@ fn adding_task_creates_md_file() {
     let _ = fs::remove_file(file_path);
 }
 
-/// Scenario 2: Pressing 'n' moves the md file to the next status directory.
+/// Scenario: Pressing 'n' moves the md file to the next status directory.
 ///
 /// Creates a task, then presses 'n' to forward status from TODO to DOING.
 /// Verifies the file is moved from todo/ to doing/.
@@ -52,6 +52,9 @@ fn forward_status_moves_md_file_to_next_directory() {
         .expect("task should exist");
     let todo_path = task.file_path();
     assert!(todo_path.exists());
+    let body = "## Notes\n\nsome content here\n";
+    let existing = fs::read_to_string(&todo_path).unwrap();
+    fs::write(&todo_path, format!("{}{}", existing, body)).unwrap();
 
     // WHEN: navigate to the task and press 'n' to forward status (TODO -> DOING)
     let task_index = app.tasks.iter()
@@ -60,7 +63,7 @@ fn forward_status_moves_md_file_to_next_directory() {
     app.selected_index = Some(task_index);
     app.handle_key_event(KeyCode::Char('n'));
 
-    // THEN: the file is moved from todo/ to doing/
+    // THEN: the file is moved from todo/ to doing/, and body content is preserved
     assert!(!todo_path.exists(), "file should no longer exist in todo/");
     let task = app.tasks.iter()
         .find(|t| t.name == "forward status test")
@@ -69,12 +72,13 @@ fn forward_status_moves_md_file_to_next_directory() {
     let doing_path = task.file_path();
     assert!(doing_path.exists(), "file should exist in doing/");
     assert!(doing_path.to_str().unwrap().contains("/doing/"));
+    assert!(fs::read_to_string(&doing_path).unwrap().contains(body), "file body should be preserved after status update");
 
     // Cleanup
     let _ = fs::remove_file(doing_path);
 }
 
-/// Scenario 2 (reverse): Pressing 'N' moves the md file to the previous status directory.
+/// Scenario: Pressing 'N' moves the md file to the previous status directory.
 ///
 /// Creates a task in DOING status, then presses 'N' to backward status from DOING to TODO.
 /// Verifies the file is moved from doing/ to todo/.
