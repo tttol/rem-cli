@@ -160,7 +160,19 @@ impl Task {
         self.updated_at = Utc::now();
         let _ = fs::create_dir_all(Self::status_dir(&self.status));
         let _ = fs::rename(old_path, self.file_path());
-        let _ = self.save();
+        let _ = self.update_frontmatter_preserving_body();
+    }
+
+    /// Updates only the YAML frontmatter of the task file while preserving the markdown body.
+    fn update_frontmatter_preserving_body(&self) -> io::Result<()> {
+        let path = self.file_path();
+        let existing = fs::read_to_string(&path)?;
+        let yaml = serde_yaml::to_string(&self.frontmatter()).map_err(io::Error::other)?;
+        let body = existing
+            .strip_prefix("---\n")
+            .and_then(|s| s.find("\n---\n").map(|pos| &s[pos + 5..]))
+            .unwrap_or("");
+        fs::write(&path, format!("---\n{}---\n{}", yaml, body))
     }
 
     /// Sorts tasks by status group (TODO, DOING, DONE) and by `created_at` within each group.
@@ -272,9 +284,11 @@ mod tests {
 
     #[test]
     fn update_status_moves_file_between_directories() {
-        // GIVEN: a saved task with TODO status
+        // GIVEN: a saved task with TODO status and a markdown body appended to the file
         let mut task = Task::new("status move test".to_string());
         task.save().unwrap();
+        let body = "## Notes\n\nsome content here\n";
+        fs::write(task.file_path(), format!("{}{}", fs::read_to_string(task.file_path()).unwrap(), body)).unwrap();
         let old_path = task.file_path();
         assert!(old_path.exists());
 
@@ -283,11 +297,13 @@ mod tests {
         let before_update = task.updated_at;
         task.update_status(TaskStatus::Doing);
 
-        // THEN: the file is moved to doing/ directory and updated_at is refreshed
+        // THEN: the file is moved to doing/ directory, updated_at is refreshed, and body content is preserved
         assert!(!old_path.exists());
         assert!(task.file_path().exists());
         assert!(task.file_path().to_str().unwrap().contains("/doing/"));
         assert!(task.updated_at > before_update);
+        let content = fs::read_to_string(task.file_path()).unwrap();
+        assert!(content.contains(body));
 
         let _ = fs::remove_file(task.file_path());
     }
