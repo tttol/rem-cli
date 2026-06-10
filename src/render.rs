@@ -37,9 +37,11 @@ fn wrap_task_name(name: &str, width: usize) -> Text<'static> {
 /// Builds the task text with its deadline below the wrapped name.
 fn task_text(task: &Task, width: usize, today: NaiveDate, is_selected: bool) -> Text<'static> {
     let is_overdue = task.deadline < today;
-    let name_style = is_overdue
-        .then_some(Style::default().fg(Color::Yellow))
-        .unwrap_or_default();
+    let name_style = if is_overdue {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
     let deadline_color = if is_overdue {
         OVERDUE_DEADLINE_COLOR
     } else if is_selected {

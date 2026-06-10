@@ -1,5 +1,5 @@
 use chrono::{DateTime, Days, Local, NaiveDate, Utc};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -7,34 +7,6 @@ use uuid::Uuid;
 
 pub const DEADLINE_DATE_FORMAT: &str = "%Y/%m/%d";
 const LEGACY_DEADLINE_DATE_FORMAT: &str = "%Y-%m-%d";
-
-mod optional_deadline_format {
-    use super::*;
-
-    pub fn serialize<S>(deadline: &Option<NaiveDate>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        deadline
-            .map(|date| date.format(DEADLINE_DATE_FORMAT).to_string())
-            .serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = Option::<String>::deserialize(deserializer)?;
-        value
-            .map(|date| {
-                [DEADLINE_DATE_FORMAT, LEGACY_DEADLINE_DATE_FORMAT]
-                    .into_iter()
-                    .find_map(|format| NaiveDate::parse_from_str(&date, format).ok())
-                    .ok_or_else(|| D::Error::custom(format!("invalid deadline: {date}")))
-            })
-            .transpose()
-    }
-}
 
 /// Represents the lifecycle status of a task.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,8 +38,8 @@ struct TaskFrontmatter {
     name: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
-    #[serde(default, with = "optional_deadline_format")]
-    deadline: Option<NaiveDate>,
+    #[serde(default)]
+    deadline: Option<String>,
 }
 
 /// A TODO task with metadata and lifecycle status.
@@ -88,6 +60,15 @@ impl Task {
             .date_naive()
             .checked_add_days(Days::new(1))
             .expect("tomorrow should be a valid date")
+    }
+
+    fn parse_deadline(value: &str) -> io::Result<(NaiveDate, bool)> {
+        if let Ok(deadline) = NaiveDate::parse_from_str(value, DEADLINE_DATE_FORMAT) {
+            return Ok((deadline, false));
+        }
+        NaiveDate::parse_from_str(value, LEGACY_DEADLINE_DATE_FORMAT)
+            .map(|deadline| (deadline, true))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
     /// Creates a new task with the given name and TODO status.
@@ -131,7 +112,7 @@ impl Task {
             name: self.name.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
-            deadline: Some(self.deadline),
+            deadline: Some(self.deadline.format(DEADLINE_DATE_FORMAT).to_string()),
         }
     }
 
@@ -154,7 +135,13 @@ impl Task {
             .unwrap_or("");
         let fm: TaskFrontmatter = serde_yaml::from_str(yaml)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let deadline = fm.deadline.unwrap_or_else(Self::tomorrow_deadline);
+        let parsed_deadline = fm
+            .deadline
+            .as_deref()
+            .map(Self::parse_deadline)
+            .transpose()?;
+        let (deadline, needs_migration) =
+            parsed_deadline.unwrap_or_else(|| (Self::tomorrow_deadline(), true));
         let task = Self {
             id: fm.id,
             name: fm.name,
@@ -168,11 +155,9 @@ impl Task {
                 .map(Path::to_path_buf)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid task path"))?,
         };
-        if fm.deadline.is_none() {
-            fs::write(
-                path,
-                task.content_with_frontmatter(&content, task.frontmatter())?,
-            )?;
+        if needs_migration {
+            let migrated = task.content_with_frontmatter(&content, task.frontmatter())?;
+            Self::replace_file_content(path, &migrated, "md.migrate")?;
         }
         Ok(task)
     }
@@ -254,18 +239,7 @@ impl Task {
         let existing = fs::read_to_string(&old_path)?;
         let content = self.content_with_updated_frontmatter(&existing, updated_at)?;
         fs::create_dir_all(new_path.parent().unwrap())?;
-        let update_path = old_path.with_extension("md.update");
-        fs::write(&update_path, content)?;
-        if let Err(error) = fs::rename(&update_path, &old_path) {
-            let cleanup_result = fs::remove_file(&update_path);
-            return match cleanup_result {
-                Ok(()) => Err(error),
-                Err(cleanup_error) => Err(io::Error::new(
-                    error.kind(),
-                    format!("{error}; failed to remove temporary file: {cleanup_error}"),
-                )),
-            };
-        }
+        Self::replace_file_content(&old_path, &content, "md.update")?;
         if let Err(move_error) = fs::rename(&old_path, &new_path) {
             let rollback_path = old_path.with_extension("md.rollback");
             let rollback_result = fs::write(&rollback_path, existing)
@@ -308,6 +282,27 @@ impl Task {
             .and_then(|s| s.find("\n---\n").map(|pos| &s[pos + 5..]))
             .unwrap_or("");
         Ok(format!("---\n{}---\n{}", yaml, body))
+    }
+
+    /// Replaces a task file through a temporary file to avoid partial writes.
+    fn replace_file_content(
+        path: &Path,
+        content: &str,
+        temporary_extension: &str,
+    ) -> io::Result<()> {
+        let temporary_path = path.with_extension(temporary_extension);
+        fs::write(&temporary_path, content)?;
+        if let Err(error) = fs::rename(&temporary_path, path) {
+            let cleanup_result = fs::remove_file(&temporary_path);
+            return match cleanup_result {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; failed to remove temporary file: {cleanup_error}"),
+                )),
+            };
+        }
+        Ok(())
     }
 
     /// Sorts tasks by status group and by `created_at` within each group.
@@ -368,7 +363,10 @@ mod tests {
         // THEN: it contains id, name, timestamps but not status
         assert_eq!(fm.id, task.id);
         assert_eq!(fm.name, "frontmatter test");
-        assert_eq!(fm.deadline, Some(task.deadline));
+        assert_eq!(
+            fm.deadline,
+            Some(task.deadline.format(DEADLINE_DATE_FORMAT).to_string())
+        );
         assert!(!yaml.contains("status"));
     }
 
@@ -483,6 +481,15 @@ mod tests {
 
         // THEN
         assert_eq!(loaded.deadline, task.deadline);
+        let migrated_content = fs::read_to_string(&path).unwrap();
+        assert!(migrated_content.contains(&format!(
+            "deadline: {}",
+            task.deadline.format(DEADLINE_DATE_FORMAT)
+        )));
+        assert!(!migrated_content.contains(&format!(
+            "deadline: {}",
+            task.deadline.format(LEGACY_DEADLINE_DATE_FORMAT)
+        )));
 
         fs::remove_dir_all(tasks_dir).unwrap();
     }
@@ -520,6 +527,33 @@ mod tests {
             expected_deadline.format(DEADLINE_DATE_FORMAT)
         )));
         assert!(migrated_content.ends_with("## Notes\n\nlegacy body\n"));
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn failed_deadline_migration_preserves_original_content() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let task = Task::new_in("failed migration".to_string(), tasks_dir.clone());
+        task.save().unwrap();
+        let path = task.file_path();
+        let original_content = fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.starts_with("deadline:"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&path, &original_content).unwrap();
+        fs::create_dir(path.with_extension("md.migrate")).unwrap();
+
+        // WHEN
+        let result = Task::load(&path, TaskStatus::Todo);
+
+        // THEN
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), original_content);
 
         fs::remove_dir_all(tasks_dir).unwrap();
     }
