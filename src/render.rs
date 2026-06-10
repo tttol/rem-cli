@@ -1,5 +1,6 @@
 use crate::app::{App, Mode};
 use crate::task::{Task, TaskStatus};
+use chrono::{Local, NaiveDate};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
@@ -32,15 +33,25 @@ fn wrap_task_name(name: &str, width: usize) -> Text<'static> {
 }
 
 /// Builds the task text with its deadline below the wrapped name.
-fn task_text(task: &Task, width: usize) -> Text<'static> {
+fn task_text(task: &Task, width: usize, today: NaiveDate) -> Text<'static> {
+    let is_overdue = task.deadline < today;
+    let name_style = is_overdue
+        .then_some(Style::default().fg(Color::Yellow))
+        .unwrap_or_default();
+    let deadline_color = if is_overdue {
+        Color::LightYellow
+    } else {
+        Color::Gray
+    };
     let deadline = Line::styled(
         format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
-        Style::default().fg(Color::Gray),
+        Style::default().fg(deadline_color),
     );
     Text::from(
         wrap_task_name(task.name.as_str(), width)
             .lines
             .into_iter()
+            .map(|line| line.patch_style(name_style))
             .chain([deadline])
             .collect::<Vec<_>>(),
     )
@@ -83,6 +94,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     };
     let constraints = vec![Constraint::Ratio(1, statuses.len() as u32); statuses.len()];
     let columns = Layout::horizontal(constraints).split(outer[0]);
+    let today = Local::now().date_naive();
 
     for (column, ((status, title), area)) in statuses.iter().zip(columns.iter()).enumerate() {
         let mut selected_in_group: Option<usize> = None;
@@ -96,7 +108,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 if app.selected_index == Some(global_idx) {
                     selected_in_group = Some(group_idx);
                 }
-                ListItem::new(task_text(t, area.width.saturating_sub(2) as usize))
+                ListItem::new(task_text(t, area.width.saturating_sub(2) as usize, today))
             })
             .collect();
         let border_style = if selected_in_group.is_some() {
@@ -253,6 +265,7 @@ mod tests {
     fn task_text_displays_deadline_below_name_in_gray() {
         // GIVEN
         let task = Task::new("deadline task".to_string());
+        let today = task.deadline;
         let expected = Text::from(vec![
             Line::from("deadline task"),
             Line::styled(
@@ -262,7 +275,28 @@ mod tests {
         ]);
 
         // WHEN
-        let actual = task_text(&task, 20);
+        let actual = task_text(&task, 20, today);
+
+        // THEN
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn task_text_displays_overdue_task_in_yellow() {
+        // GIVEN
+        let mut task = Task::new("overdue task".to_string());
+        let today = task.deadline;
+        task.deadline = today.pred_opt().unwrap();
+        let expected = Text::from(vec![
+            Line::styled("overdue task", Style::default().fg(Color::Yellow)),
+            Line::styled(
+                format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
+                Style::default().fg(Color::LightYellow),
+            ),
+        ]);
+
+        // WHEN
+        let actual = task_text(&task, 20, today);
 
         // THEN
         assert_eq!(actual, expected);
