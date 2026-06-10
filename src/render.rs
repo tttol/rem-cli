@@ -6,6 +6,8 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
+const OVERDUE_DEADLINE_COLOR: Color = Color::Rgb(190, 180, 120);
+
 /// Wraps a task name to the available panel width.
 fn wrap_task_name(name: &str, width: usize) -> Text<'static> {
     if width == 0 || Line::from(name).width() <= width {
@@ -39,7 +41,7 @@ fn task_text(task: &Task, width: usize, today: NaiveDate, is_selected: bool) -> 
         .then_some(Style::default().fg(Color::Yellow))
         .unwrap_or_default();
     let deadline_color = if is_overdue {
-        Color::LightYellow
+        OVERDUE_DEADLINE_COLOR
     } else if is_selected {
         Color::Gray
     } else {
@@ -319,7 +321,7 @@ mod tests {
             Line::styled("overdue task", Style::default().fg(Color::Yellow)),
             Line::styled(
                 format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
-                Style::default().fg(Color::LightYellow),
+                Style::default().fg(OVERDUE_DEADLINE_COLOR),
             ),
         ]);
 
