@@ -1,9 +1,12 @@
 use crate::app::{App, Mode};
-use crate::task::TaskStatus;
+use crate::task::{DEADLINE_DATE_FORMAT, Task, TaskStatus};
+use chrono::{Local, NaiveDate};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
+
+const OVERDUE_DEADLINE_COLOR: Color = Color::Rgb(190, 180, 120);
 
 /// Wraps a task name to the available panel width.
 fn wrap_task_name(name: &str, width: usize) -> Text<'static> {
@@ -29,6 +32,35 @@ fn wrap_task_name(name: &str, width: usize) -> Text<'static> {
         lines.push(Line::from(current_line));
     }
     Text::from(lines)
+}
+
+/// Builds the task text with its deadline below the wrapped name.
+fn task_text(task: &Task, width: usize, today: NaiveDate, is_selected: bool) -> Text<'static> {
+    let is_overdue = task.deadline < today;
+    let name_style = if is_overdue {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+    let deadline_color = if is_overdue {
+        OVERDUE_DEADLINE_COLOR
+    } else if is_selected {
+        Color::Gray
+    } else {
+        Color::DarkGray
+    };
+    let deadline = Line::styled(
+        format!("Deadline: {}", task.deadline.format(DEADLINE_DATE_FORMAT)),
+        Style::default().fg(deadline_color),
+    );
+    Text::from(
+        wrap_task_name(task.name.as_str(), width)
+            .lines
+            .into_iter()
+            .map(|line| line.patch_style(name_style))
+            .chain([deadline])
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn status_title_style(status: TaskStatus) -> Style {
@@ -68,6 +100,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     };
     let constraints = vec![Constraint::Ratio(1, statuses.len() as u32); statuses.len()];
     let columns = Layout::horizontal(constraints).split(outer[0]);
+    let today = Local::now().date_naive();
 
     for (column, ((status, title), area)) in statuses.iter().zip(columns.iter()).enumerate() {
         let mut selected_in_group: Option<usize> = None;
@@ -78,12 +111,15 @@ pub fn render(frame: &mut Frame, app: &App) {
             .filter(|(_, t)| t.status == *status)
             .enumerate()
             .map(|(group_idx, (global_idx, t))| {
-                if app.selected_index == Some(global_idx) {
+                let is_selected = app.selected_index == Some(global_idx);
+                if is_selected {
                     selected_in_group = Some(group_idx);
                 }
-                ListItem::new(wrap_task_name(
-                    t.name.as_str(),
+                ListItem::new(task_text(
+                    t,
                     area.width.saturating_sub(2) as usize,
+                    today,
+                    is_selected,
                 ))
             })
             .collect();
@@ -232,6 +268,67 @@ mod tests {
 
         // WHEN
         let actual = wrap_task_name(task_name, width);
+
+        // THEN
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn task_text_displays_unselected_deadline_in_dark_gray() {
+        // GIVEN
+        let task = Task::new("deadline task".to_string());
+        let today = task.deadline;
+        let expected = Text::from(vec![
+            Line::from("deadline task"),
+            Line::styled(
+                format!("Deadline: {}", task.deadline.format(DEADLINE_DATE_FORMAT)),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+
+        // WHEN
+        let actual = task_text(&task, 20, today, false);
+
+        // THEN
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn task_text_displays_selected_deadline_in_gray() {
+        // GIVEN
+        let task = Task::new("selected task".to_string());
+        let today = task.deadline;
+        let expected = Text::from(vec![
+            Line::from("selected task"),
+            Line::styled(
+                format!("Deadline: {}", task.deadline.format(DEADLINE_DATE_FORMAT)),
+                Style::default().fg(Color::Gray),
+            ),
+        ]);
+
+        // WHEN
+        let actual = task_text(&task, 20, today, true);
+
+        // THEN
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn task_text_displays_overdue_task_in_yellow() {
+        // GIVEN
+        let mut task = Task::new("overdue task".to_string());
+        let today = task.deadline;
+        task.deadline = today.pred_opt().unwrap();
+        let expected = Text::from(vec![
+            Line::styled("overdue task", Style::default().fg(Color::Yellow)),
+            Line::styled(
+                format!("Deadline: {}", task.deadline.format(DEADLINE_DATE_FORMAT)),
+                Style::default().fg(OVERDUE_DEADLINE_COLOR),
+            ),
+        ]);
+
+        // WHEN
+        let actual = task_text(&task, 20, today, false);
 
         // THEN
         assert_eq!(actual, expected);

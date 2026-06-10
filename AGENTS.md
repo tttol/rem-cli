@@ -39,7 +39,7 @@ Tasks are stored as markdown files under `~/.rem-cli/tasks/` with directory-base
 ```
 
 - Status is determined by which directory the file resides in (not by frontmatter)
-- Frontmatter contains: `id`, `name`, `created_at`, `updated_at` (no `status` field)
+- Frontmatter contains: `id`, `name`, `created_at`, `updated_at`, `deadline` in `yyyy/MM/dd` format (no `status` field)
 - Status changes move the file between directories via `fs::rename`
 
 ## Key Patterns
