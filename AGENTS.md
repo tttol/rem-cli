@@ -23,7 +23,7 @@ cargo fmt            # Format code
 - **Source Files**:
   - `src/main.rs`: Terminal setup/cleanup, event loop, neovim integration
   - `src/app.rs`: Application state (`App` struct), input handling, mode management
-  - `src/render.rs`: UI rendering logic (layout, task lists, preview panel)
+  - `src/render.rs`: UI rendering logic (status columns, task lists, input field)
   - `src/task.rs`: Task data model, filesystem I/O, status management
 
 ## Data Storage
@@ -32,6 +32,7 @@ Tasks are stored as markdown files under `~/.rem-cli/tasks/` with directory-base
 
 ```
 ~/.rem-cli/tasks/
+  parking/<uuid>.md
   todo/<uuid>.md
   doing/<uuid>.md
   done/<uuid>.md
@@ -48,14 +49,18 @@ Tasks are stored as markdown files under `~/.rem-cli/tasks/` with directory-base
 - Key events are handled only on `KeyEventKind::Press`
 - Clean terminal restoration on exit (disable raw mode, leave alternate screen)
 - Two input modes: `Normal` (navigation/actions) and `Editing` (text input for new tasks)
-- Done tasks are lazy-loaded on demand (`d` key toggles) to keep startup fast
-- Preview panel (right 70%) shows the selected task's markdown content, updated on cursor movement
+- PARKING tasks are loaded after the first frame is rendered
+- DONE tasks are lazy-loaded on demand (`d` key toggles) to keep startup fast
+- Status columns are displayed horizontally as PARKING / TODO / DOING / DONE
+- DONE is hidden by default and toggled with the `d` key
+- `j` / `k` move within a status column, while `h` / `l` move between non-empty columns
+- `n` / `N` move the selected task forward or backward through the status lifecycle
 - Neovim integration: Enter key temporarily exits TUI, opens task file in nvim, then restores TUI
 - `open_file: Option<PathBuf>` is used as a message-passing mechanism between `App` (state) and `main` (terminal control)
-- After returning from neovim, `App::after_edit()` reloads the task metadata from disk and refreshes the preview
+- After returning from neovim, `App::after_edit()` reloads the task metadata from disk
 - `Task::reload()` re-reads a task's frontmatter from its markdown file without changing status
-- Task names in the left panel are word-wrapped to fit the panel width (`wrap_task_name`)
-- Editing mode shows a visible cursor at the current input position via `set_cursor_position`
+- Task names are wrapped to fit each status column (`wrap_task_name`)
+- Editing mode supports cursor movement, insertion, deletion, and horizontal scrolling
 - `--version` / `-V` flag prints version and exits without entering TUI
 
 ## CI/CD

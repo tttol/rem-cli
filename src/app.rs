@@ -20,6 +20,8 @@ pub struct App {
     pub parking_loaded: bool,
     pub done_loaded: bool,
     pub open_file: Option<PathBuf>,
+    pub error_message: Option<String>,
+    pub(crate) tasks_dir: PathBuf,
 }
 
 impl Default for App {
@@ -34,8 +36,20 @@ impl App {
     /// Loads TODO and DOING tasks from the filesystem.
     /// PARKING and DONE tasks are not loaded at startup.
     pub fn new() -> Self {
-        let mut tasks = Task::load_todo().unwrap_or_default();
-        tasks.extend(Task::load_doing().unwrap_or_default());
+        Self::with_tasks_dir(Task::default_base_dir())
+    }
+
+    /// Creates an `App` using the provided task storage directory.
+    pub fn with_tasks_dir(tasks_dir: PathBuf) -> Self {
+        let todo_result = Task::load_todo_from(&tasks_dir);
+        let doing_result = Task::load_doing_from(&tasks_dir);
+        let error_message = todo_result
+            .as_ref()
+            .err()
+            .or_else(|| doing_result.as_ref().err())
+            .map(|error| format!("Failed to load tasks: {error}"));
+        let mut tasks = todo_result.unwrap_or_default();
+        tasks.extend(doing_result.unwrap_or_default());
         let tasks = Task::sort(tasks);
         let selected_index = if tasks.is_empty() { None } else { Some(0) };
         Self {
@@ -48,6 +62,8 @@ impl App {
             parking_loaded: false,
             done_loaded: false,
             open_file: None,
+            error_message,
+            tasks_dir,
         }
     }
 
@@ -60,11 +76,17 @@ impl App {
             .selected_index
             .and_then(|index| self.tasks.get(index))
             .map(|task| task.id);
-        if let Ok(parking_tasks) = Task::load_parking() {
-            self.tasks.extend(parking_tasks);
-            self.tasks = Task::sort(self.tasks.clone());
-        }
+        let parking_tasks = match Task::load_parking_from(&self.tasks_dir) {
+            Ok(tasks) => tasks,
+            Err(error) => {
+                self.error_message = Some(format!("Failed to load PARKING tasks: {error}"));
+                return;
+            }
+        };
+        self.tasks.extend(parking_tasks);
+        self.tasks = Task::sort(self.tasks.clone());
         self.parking_loaded = true;
+        self.error_message = None;
         self.selected_index = selected_id
             .and_then(|id| self.tasks.iter().position(|task| task.id == id))
             .or_else(|| (!self.tasks.is_empty()).then_some(0));
@@ -286,7 +308,11 @@ impl App {
             .iter()
             .position(|candidate| *candidate == index)
             .unwrap_or(0);
-        self.tasks[index].update_status(next_status);
+        if let Err(error) = self.tasks[index].update_status(next_status) {
+            self.error_message = Some(format!("Failed to update task status: {error}"));
+            return;
+        }
+        self.error_message = None;
         if next_status == TaskStatus::Done && !self.done_loaded {
             self.tasks.retain(|task| task.id != id);
             self.tasks = Task::sort(self.tasks.clone());
@@ -326,8 +352,11 @@ impl App {
     /// Clears the input buffer and returns to Normal mode after completion.
     fn add_task(&mut self) {
         if !self.input_buffer.is_empty() {
-            let new_task = Task::new(self.input_buffer.clone());
-            let _ = new_task.save();
+            let new_task = Task::new_in(self.input_buffer.clone(), self.tasks_dir.clone());
+            if let Err(error) = new_task.save() {
+                self.error_message = Some(format!("Failed to add task: {error}"));
+                return;
+            }
             self.tasks.push(new_task);
             self.tasks = Task::sort(self.tasks.clone());
             if self.selected_index.is_none() {
@@ -337,6 +366,7 @@ impl App {
         self.input_buffer.clear();
         self.input_cursor = 0;
         self.input_mode = Mode::Normal;
+        self.error_message = None;
     }
 
     /// Toggles the visibility of DONE tasks.
@@ -360,11 +390,17 @@ impl App {
                     selection.and_then(|(_, row)| self.nearby_selection(TaskStatus::Doing, row));
             }
         } else {
-            if let Ok(done_tasks) = Task::load_done() {
-                self.tasks.extend(done_tasks);
-                self.tasks = Task::sort(self.tasks.clone());
-            }
+            let done_tasks = match Task::load_done_from(&self.tasks_dir) {
+                Ok(tasks) => tasks,
+                Err(error) => {
+                    self.error_message = Some(format!("Failed to load DONE tasks: {error}"));
+                    return;
+                }
+            };
+            self.tasks.extend(done_tasks);
+            self.tasks = Task::sort(self.tasks.clone());
             self.done_loaded = true;
+            self.error_message = None;
         }
         if self.tasks.is_empty() {
             self.selected_index = None;
@@ -379,6 +415,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use uuid::Uuid;
 
     fn create_app(tasks: Vec<Task>, selected_index: Option<usize>) -> App {
         App {
@@ -391,6 +429,8 @@ mod tests {
             parking_loaded: true,
             done_loaded: false,
             open_file: None,
+            error_message: None,
+            tasks_dir: Task::default_base_dir(),
         }
     }
 
@@ -400,10 +440,15 @@ mod tests {
         task
     }
 
+    fn temporary_tasks_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("rem-cli-app-test-{}", Uuid::new_v4()))
+    }
+
     #[test]
     fn parking_is_not_loaded_during_initialization() {
         // GIVEN
-        let app = App::new();
+        let tasks_dir = temporary_tasks_dir();
+        let app = App::with_tasks_dir(tasks_dir.clone());
 
         // WHEN
         let parking_tasks = app
@@ -415,18 +460,43 @@ mod tests {
         // THEN
         assert!(!app.parking_loaded);
         assert_eq!(parking_tasks, 0);
+        assert!(!tasks_dir.exists());
     }
 
     #[test]
     fn parking_is_loaded_after_first_render() {
         // GIVEN
-        let mut app = App::new();
+        let tasks_dir = temporary_tasks_dir();
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
 
         // WHEN
         app.load_parking_after_first_render();
 
         // THEN
         assert!(app.parking_loaded);
+        assert!(!tasks_dir.exists());
+    }
+
+    #[test]
+    fn parking_load_failure_is_retried() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        fs::create_dir_all(&tasks_dir).unwrap();
+        fs::write(tasks_dir.join("parking"), "not a directory").unwrap();
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
+
+        // WHEN
+        app.load_parking_after_first_render();
+
+        // THEN
+        assert!(!app.parking_loaded);
+        assert!(app.error_message.is_some());
+
+        fs::remove_file(tasks_dir.join("parking")).unwrap();
+        app.load_parking_after_first_render();
+        assert!(app.parking_loaded);
+        assert!(app.error_message.is_none());
+        fs::remove_dir_all(tasks_dir).unwrap();
     }
 
     #[test]
@@ -522,5 +592,34 @@ mod tests {
         // THEN
         assert_eq!(app.input_buffer, "あう");
         assert_eq!(app.input_cursor, 1);
+    }
+
+    #[test]
+    fn status_update_failure_keeps_task_visible_and_unchanged() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let task = Task::new_in("missing file".to_string(), tasks_dir.clone());
+        let mut app = App {
+            should_quit: false,
+            input_mode: Mode::Normal,
+            input_buffer: String::new(),
+            input_cursor: 0,
+            tasks: vec![task],
+            selected_index: Some(0),
+            parking_loaded: true,
+            done_loaded: false,
+            open_file: None,
+            error_message: None,
+            tasks_dir,
+        };
+
+        // WHEN
+        app.handle_key_event(KeyCode::Char('n'));
+
+        // THEN
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].status, TaskStatus::Todo);
+        assert_eq!(app.selected_index, Some(0));
+        assert!(app.error_message.is_some());
     }
 }

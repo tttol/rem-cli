@@ -115,12 +115,21 @@ pub fn render(frame: &mut Frame, app: &App) {
         let cursor_width = Line::from(cursor_prefix.as_str()).width() as u16;
         let input_width = outer[1].width.saturating_sub(2).max(1);
         let horizontal_offset = cursor_width.saturating_sub(input_width.saturating_sub(1));
+        let input_title = app
+            .error_message
+            .as_deref()
+            .unwrap_or("New Task (Enter: confirm, Esc: cancel)");
+        let input_style = app
+            .error_message
+            .as_ref()
+            .map_or_else(Style::default, |_| Style::default().fg(Color::Red));
         let input = Paragraph::new(app.input_buffer.as_str())
             .block(
                 Block::default()
-                    .title(" New Task (Enter: confirm, Esc: cancel) ")
+                    .title(format!(" {input_title} "))
                     .borders(Borders::ALL),
             )
+            .style(input_style)
             .scroll((0, horizontal_offset));
         frame.render_widget(input, outer[1]);
         frame.set_cursor_position((
@@ -128,9 +137,16 @@ pub fn render(frame: &mut Frame, app: &App) {
             outer[1].y + 1,
         ));
     } else {
-        let help = Paragraph::new(
-            " a: add | j/k: up/down | h/l: left/right | n/N: status | d: toggle done | q: quit ",
+        let (message, style) = app.error_message.as_deref().map_or_else(
+            || {
+                (
+                    " a: add | j/k: up/down | h/l: left/right | n/N: status | d: toggle done | q: quit ",
+                    Style::default(),
+                )
+            },
+            |error| (error, Style::default().fg(Color::Red)),
         );
+        let help = Paragraph::new(message).style(style);
         frame.render_widget(help, outer[1]);
     }
 }
@@ -138,6 +154,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::task::Task;
     use ratatui::backend::TestBackend;
 
     fn create_app(done_loaded: bool) -> App {
@@ -151,6 +168,8 @@ mod tests {
             parking_loaded: false,
             done_loaded,
             open_file: None,
+            error_message: None,
+            tasks_dir: Task::default_base_dir(),
         }
     }
 
