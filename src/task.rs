@@ -1,9 +1,40 @@
 use chrono::{DateTime, Days, Local, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+
+pub const DEADLINE_DATE_FORMAT: &str = "%Y/%m/%d";
+const LEGACY_DEADLINE_DATE_FORMAT: &str = "%Y-%m-%d";
+
+mod optional_deadline_format {
+    use super::*;
+
+    pub fn serialize<S>(deadline: &Option<NaiveDate>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        deadline
+            .map(|date| date.format(DEADLINE_DATE_FORMAT).to_string())
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Option::<String>::deserialize(deserializer)?;
+        value
+            .map(|date| {
+                [DEADLINE_DATE_FORMAT, LEGACY_DEADLINE_DATE_FORMAT]
+                    .into_iter()
+                    .find_map(|format| NaiveDate::parse_from_str(&date, format).ok())
+                    .ok_or_else(|| D::Error::custom(format!("invalid deadline: {date}")))
+            })
+            .transpose()
+    }
+}
 
 /// Represents the lifecycle status of a task.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -35,6 +66,7 @@ struct TaskFrontmatter {
     name: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    #[serde(default, with = "optional_deadline_format")]
     deadline: Option<NaiveDate>,
 }
 
@@ -422,7 +454,35 @@ mod tests {
         assert_eq!(loaded.status, TaskStatus::Todo);
         assert_eq!(loaded.deadline, task.deadline);
         let content = fs::read_to_string(task.file_path()).unwrap();
-        assert!(content.contains(&format!("deadline: {}", task.deadline)));
+        assert!(content.contains(&format!(
+            "deadline: {}",
+            task.deadline.format(DEADLINE_DATE_FORMAT)
+        )));
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn load_accepts_legacy_deadline_format() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let task = Task::new_in("legacy deadline format".to_string(), tasks_dir.clone());
+        task.save().unwrap();
+        let path = task.file_path();
+        let content = fs::read_to_string(&path).unwrap().replace(
+            &task.deadline.format(DEADLINE_DATE_FORMAT).to_string(),
+            &task
+                .deadline
+                .format(LEGACY_DEADLINE_DATE_FORMAT)
+                .to_string(),
+        );
+        fs::write(&path, content).unwrap();
+
+        // WHEN
+        let loaded = Task::load(&path, TaskStatus::Todo).unwrap();
+
+        // THEN
+        assert_eq!(loaded.deadline, task.deadline);
 
         fs::remove_dir_all(tasks_dir).unwrap();
     }
@@ -455,7 +515,10 @@ mod tests {
         assert_eq!(loaded.deadline, expected_deadline);
         assert_eq!(loaded.created_at, task.created_at);
         assert_eq!(loaded.updated_at, task.updated_at);
-        assert!(migrated_content.contains(&format!("deadline: {expected_deadline}")));
+        assert!(migrated_content.contains(&format!(
+            "deadline: {}",
+            expected_deadline.format(DEADLINE_DATE_FORMAT)
+        )));
         assert!(migrated_content.ends_with("## Notes\n\nlegacy body\n"));
 
         fs::remove_dir_all(tasks_dir).unwrap();
@@ -468,9 +531,10 @@ mod tests {
         let task = Task::new_in("invalid deadline".to_string(), tasks_dir.clone());
         task.save().unwrap();
         let path = task.file_path();
-        let content = fs::read_to_string(&path)
-            .unwrap()
-            .replace(&task.deadline.to_string(), "2026-02-30");
+        let content = fs::read_to_string(&path).unwrap().replace(
+            &task.deadline.format(DEADLINE_DATE_FORMAT).to_string(),
+            "2026/02/30",
+        );
         fs::write(&path, content).unwrap();
 
         // WHEN
@@ -506,7 +570,10 @@ mod tests {
         assert!(task.updated_at > before_update);
         let content = fs::read_to_string(task.file_path()).unwrap();
         assert!(content.contains(body));
-        assert!(content.contains(&format!("deadline: {}", task.deadline)));
+        assert!(content.contains(&format!(
+            "deadline: {}",
+            task.deadline.format(DEADLINE_DATE_FORMAT)
+        )));
 
         fs::remove_dir_all(tasks_dir).unwrap();
     }

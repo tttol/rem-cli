@@ -1,7 +1,7 @@
 use chrono::{Days, Local};
 use crossterm::event::KeyCode;
 use rem_cli::app::App;
-use rem_cli::task::TaskStatus;
+use rem_cli::task::{DEADLINE_DATE_FORMAT, TaskStatus};
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -48,7 +48,10 @@ fn adding_task_creates_md_file() {
         .unwrap();
     let content = fs::read_to_string(file_path).unwrap();
     assert_eq!(new_task.deadline, expected_deadline);
-    assert!(content.contains(&format!("deadline: {expected_deadline}")));
+    assert!(content.contains(&format!(
+        "deadline: {}",
+        expected_deadline.format(DEADLINE_DATE_FORMAT)
+    )));
 
     fs::remove_dir_all(tasks_dir).unwrap();
 }

@@ -1,5 +1,5 @@
 use crate::app::{App, Mode};
-use crate::task::{Task, TaskStatus};
+use crate::task::{DEADLINE_DATE_FORMAT, Task, TaskStatus};
 use chrono::{Local, NaiveDate};
 use ratatui::{
     prelude::*,
@@ -48,7 +48,7 @@ fn task_text(task: &Task, width: usize, today: NaiveDate, is_selected: bool) -> 
         Color::DarkGray
     };
     let deadline = Line::styled(
-        format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
+        format!("Deadline: {}", task.deadline.format(DEADLINE_DATE_FORMAT)),
         Style::default().fg(deadline_color),
     );
     Text::from(
@@ -279,7 +279,7 @@ mod tests {
         let expected = Text::from(vec![
             Line::from("deadline task"),
             Line::styled(
-                format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
+                format!("Deadline: {}", task.deadline.format(DEADLINE_DATE_FORMAT)),
                 Style::default().fg(Color::DarkGray),
             ),
         ]);
@@ -299,7 +299,7 @@ mod tests {
         let expected = Text::from(vec![
             Line::from("selected task"),
             Line::styled(
-                format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
+                format!("Deadline: {}", task.deadline.format(DEADLINE_DATE_FORMAT)),
                 Style::default().fg(Color::Gray),
             ),
         ]);
@@ -320,7 +320,7 @@ mod tests {
         let expected = Text::from(vec![
             Line::styled("overdue task", Style::default().fg(Color::Yellow)),
             Line::styled(
-                format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
+                format!("Deadline: {}", task.deadline.format(DEADLINE_DATE_FORMAT)),
                 Style::default().fg(OVERDUE_DEADLINE_COLOR),
             ),
         ]);
