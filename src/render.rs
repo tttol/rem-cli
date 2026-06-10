@@ -33,15 +33,17 @@ fn wrap_task_name(name: &str, width: usize) -> Text<'static> {
 }
 
 /// Builds the task text with its deadline below the wrapped name.
-fn task_text(task: &Task, width: usize, today: NaiveDate) -> Text<'static> {
+fn task_text(task: &Task, width: usize, today: NaiveDate, is_selected: bool) -> Text<'static> {
     let is_overdue = task.deadline < today;
     let name_style = is_overdue
         .then_some(Style::default().fg(Color::Yellow))
         .unwrap_or_default();
     let deadline_color = if is_overdue {
         Color::LightYellow
-    } else {
+    } else if is_selected {
         Color::Gray
+    } else {
+        Color::DarkGray
     };
     let deadline = Line::styled(
         format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
@@ -105,10 +107,16 @@ pub fn render(frame: &mut Frame, app: &App) {
             .filter(|(_, t)| t.status == *status)
             .enumerate()
             .map(|(group_idx, (global_idx, t))| {
-                if app.selected_index == Some(global_idx) {
+                let is_selected = app.selected_index == Some(global_idx);
+                if is_selected {
                     selected_in_group = Some(group_idx);
                 }
-                ListItem::new(task_text(t, area.width.saturating_sub(2) as usize, today))
+                ListItem::new(task_text(
+                    t,
+                    area.width.saturating_sub(2) as usize,
+                    today,
+                    is_selected,
+                ))
             })
             .collect();
         let border_style = if selected_in_group.is_some() {
@@ -262,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn task_text_displays_deadline_below_name_in_gray() {
+    fn task_text_displays_unselected_deadline_in_dark_gray() {
         // GIVEN
         let task = Task::new("deadline task".to_string());
         let today = task.deadline;
@@ -270,12 +278,32 @@ mod tests {
             Line::from("deadline task"),
             Line::styled(
                 format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+
+        // WHEN
+        let actual = task_text(&task, 20, today, false);
+
+        // THEN
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn task_text_displays_selected_deadline_in_gray() {
+        // GIVEN
+        let task = Task::new("selected task".to_string());
+        let today = task.deadline;
+        let expected = Text::from(vec![
+            Line::from("selected task"),
+            Line::styled(
+                format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
                 Style::default().fg(Color::Gray),
             ),
         ]);
 
         // WHEN
-        let actual = task_text(&task, 20, today);
+        let actual = task_text(&task, 20, today, true);
 
         // THEN
         assert_eq!(actual, expected);
@@ -296,7 +324,7 @@ mod tests {
         ]);
 
         // WHEN
-        let actual = task_text(&task, 20, today);
+        let actual = task_text(&task, 20, today, false);
 
         // THEN
         assert_eq!(actual, expected);
