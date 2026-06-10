@@ -1,3 +1,4 @@
+use chrono::{Days, Local};
 use crossterm::event::KeyCode;
 use rem_cli::app::App;
 use rem_cli::task::TaskStatus;
@@ -41,6 +42,13 @@ fn adding_task_creates_md_file() {
         file_path.to_str().unwrap().contains("/todo/"),
         "md file should be in todo/ directory"
     );
+    let expected_deadline = Local::now()
+        .date_naive()
+        .checked_add_days(Days::new(1))
+        .unwrap();
+    let content = fs::read_to_string(file_path).unwrap();
+    assert_eq!(new_task.deadline, expected_deadline);
+    assert!(content.contains(&format!("deadline: {expected_deadline}")));
 
     fs::remove_dir_all(tasks_dir).unwrap();
 }

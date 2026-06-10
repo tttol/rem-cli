@@ -1,5 +1,5 @@
 use crate::app::{App, Mode};
-use crate::task::TaskStatus;
+use crate::task::{Task, TaskStatus};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
@@ -29,6 +29,21 @@ fn wrap_task_name(name: &str, width: usize) -> Text<'static> {
         lines.push(Line::from(current_line));
     }
     Text::from(lines)
+}
+
+/// Builds the task text with its deadline below the wrapped name.
+fn task_text(task: &Task, width: usize) -> Text<'static> {
+    let deadline = Line::styled(
+        format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
+        Style::default().fg(Color::DarkGray),
+    );
+    Text::from(
+        wrap_task_name(task.name.as_str(), width)
+            .lines
+            .into_iter()
+            .chain([deadline])
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn status_title_style(status: TaskStatus) -> Style {
@@ -81,10 +96,7 @@ pub fn render(frame: &mut Frame, app: &App) {
                 if app.selected_index == Some(global_idx) {
                     selected_in_group = Some(group_idx);
                 }
-                ListItem::new(wrap_task_name(
-                    t.name.as_str(),
-                    area.width.saturating_sub(2) as usize,
-                ))
+                ListItem::new(task_text(t, area.width.saturating_sub(2) as usize))
             })
             .collect();
         let border_style = if selected_in_group.is_some() {
@@ -232,6 +244,25 @@ mod tests {
 
         // WHEN
         let actual = wrap_task_name(task_name, width);
+
+        // THEN
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn task_text_displays_deadline_below_name_in_dark_gray() {
+        // GIVEN
+        let task = Task::new("deadline task".to_string());
+        let expected = Text::from(vec![
+            Line::from("deadline task"),
+            Line::styled(
+                format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+
+        // WHEN
+        let actual = task_text(&task, 20);
 
         // THEN
         assert_eq!(actual, expected);

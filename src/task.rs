@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Days, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
@@ -35,6 +35,7 @@ struct TaskFrontmatter {
     name: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    deadline: Option<NaiveDate>,
 }
 
 /// A TODO task with metadata and lifecycle status.
@@ -45,10 +46,18 @@ pub struct Task {
     pub status: TaskStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub deadline: NaiveDate,
     base_dir: PathBuf,
 }
 
 impl Task {
+    fn tomorrow_deadline() -> NaiveDate {
+        Local::now()
+            .date_naive()
+            .checked_add_days(Days::new(1))
+            .expect("tomorrow should be a valid date")
+    }
+
     /// Creates a new task with the given name and TODO status.
     pub fn new(name: String) -> Self {
         Self::new_in(name, Self::default_base_dir())
@@ -63,6 +72,7 @@ impl Task {
             status: TaskStatus::Todo,
             created_at: now,
             updated_at: now,
+            deadline: Self::tomorrow_deadline(),
             base_dir,
         }
     }
@@ -89,6 +99,7 @@ impl Task {
             name: self.name.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
+            deadline: Some(self.deadline),
         }
     }
 
@@ -111,18 +122,27 @@ impl Task {
             .unwrap_or("");
         let fm: TaskFrontmatter = serde_yaml::from_str(yaml)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        Ok(Self {
+        let deadline = fm.deadline.unwrap_or_else(Self::tomorrow_deadline);
+        let task = Self {
             id: fm.id,
             name: fm.name,
             status,
             created_at: fm.created_at,
             updated_at: fm.updated_at,
+            deadline,
             base_dir: path
                 .parent()
                 .and_then(Path::parent)
                 .map(Path::to_path_buf)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid task path"))?,
-        })
+        };
+        if fm.deadline.is_none() {
+            fs::write(
+                path,
+                task.content_with_frontmatter(&content, task.frontmatter())?,
+            )?;
+        }
+        Ok(task)
     }
 
     /// Reloads this task's metadata from its markdown file on disk.
@@ -241,6 +261,15 @@ impl Task {
             updated_at,
             ..self.frontmatter()
         };
+        self.content_with_frontmatter(existing, frontmatter)
+    }
+
+    /// Builds file content with the provided frontmatter while preserving the markdown body.
+    fn content_with_frontmatter(
+        &self,
+        existing: &str,
+        frontmatter: TaskFrontmatter,
+    ) -> io::Result<String> {
         let yaml = serde_yaml::to_string(&frontmatter).map_err(io::Error::other)?;
         let body = existing
             .strip_prefix("---\n")
@@ -307,7 +336,20 @@ mod tests {
         // THEN: it contains id, name, timestamps but not status
         assert_eq!(fm.id, task.id);
         assert_eq!(fm.name, "frontmatter test");
+        assert_eq!(fm.deadline, Some(task.deadline));
         assert!(!yaml.contains("status"));
+    }
+
+    #[test]
+    fn new_task_has_tomorrow_as_deadline() {
+        // GIVEN
+        let expected = Task::tomorrow_deadline();
+
+        // WHEN
+        let task = Task::new("deadline test".to_string());
+
+        // THEN
+        assert_eq!(task.deadline, expected);
     }
 
     #[test]
@@ -378,6 +420,64 @@ mod tests {
         assert_eq!(loaded.id, task.id);
         assert_eq!(loaded.name, "roundtrip test");
         assert_eq!(loaded.status, TaskStatus::Todo);
+        assert_eq!(loaded.deadline, task.deadline);
+        let content = fs::read_to_string(task.file_path()).unwrap();
+        assert!(content.contains(&format!("deadline: {}", task.deadline)));
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn load_adds_missing_deadline_without_changing_existing_content() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let task = Task::new_in("legacy task".to_string(), tasks_dir.clone());
+        task.save().unwrap();
+        let path = task.file_path();
+        let content = fs::read_to_string(&path).unwrap();
+        let legacy_content = format!(
+            "{}## Notes\n\nlegacy body\n",
+            content
+                .lines()
+                .filter(|line| !line.starts_with("deadline:"))
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        );
+        fs::write(&path, &legacy_content).unwrap();
+        let expected_deadline = Task::tomorrow_deadline();
+
+        // WHEN
+        let loaded = Task::load(&path, TaskStatus::Todo).unwrap();
+
+        // THEN
+        let migrated_content = fs::read_to_string(&path).unwrap();
+        assert_eq!(loaded.deadline, expected_deadline);
+        assert_eq!(loaded.created_at, task.created_at);
+        assert_eq!(loaded.updated_at, task.updated_at);
+        assert!(migrated_content.contains(&format!("deadline: {expected_deadline}")));
+        assert!(migrated_content.ends_with("## Notes\n\nlegacy body\n"));
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn load_returns_error_for_invalid_deadline() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let task = Task::new_in("invalid deadline".to_string(), tasks_dir.clone());
+        task.save().unwrap();
+        let path = task.file_path();
+        let content = fs::read_to_string(&path)
+            .unwrap()
+            .replace(&task.deadline.to_string(), "2026-02-30");
+        fs::write(&path, content).unwrap();
+
+        // WHEN
+        let result = Task::load(&path, TaskStatus::Todo);
+
+        // THEN
+        assert!(result.is_err());
 
         fs::remove_dir_all(tasks_dir).unwrap();
     }
@@ -406,6 +506,7 @@ mod tests {
         assert!(task.updated_at > before_update);
         let content = fs::read_to_string(task.file_path()).unwrap();
         assert!(content.contains(body));
+        assert!(content.contains(&format!("deadline: {}", task.deadline)));
 
         fs::remove_dir_all(tasks_dir).unwrap();
     }
