@@ -1,13 +1,14 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Represents the lifecycle status of a task.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TaskStatus {
+    Parking,
     Todo,
     Doing,
     Done,
@@ -17,12 +18,12 @@ impl TaskStatus {
     /// Returns the directory name corresponding to this status (e.g. `"todo"`, `"doing"`, `"done"`).
     fn dir_name(&self) -> &str {
         match self {
+            TaskStatus::Parking => "parking",
             TaskStatus::Todo => "todo",
             TaskStatus::Doing => "doing",
             TaskStatus::Done => "done",
         }
     }
-
 }
 
 /// Internal representation of the YAML frontmatter stored in each task's markdown file.
@@ -101,8 +102,8 @@ impl Task {
             .split("---")
             .next()
             .unwrap_or("");
-        let fm: TaskFrontmatter =
-            serde_yaml::from_str(yaml).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let fm: TaskFrontmatter = serde_yaml::from_str(yaml)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         Ok(Self {
             id: fm.id,
             name: fm.name,
@@ -114,7 +115,12 @@ impl Task {
 
     /// Reloads this task's metadata from its markdown file on disk.
     pub fn reload(&self) -> io::Result<Self> {
-        Self::load(&self.file_path(), self.status.clone())
+        Self::load(&self.file_path(), self.status)
+    }
+
+    /// Loads all tasks from the `parking/` directory.
+    pub fn load_parking() -> io::Result<Vec<Self>> {
+        Self::load_by_status(&[TaskStatus::Parking])
     }
 
     /// Loads all tasks from the `todo/` directory.
@@ -142,10 +148,10 @@ impl Task {
             }
             for entry in fs::read_dir(&dir)? {
                 let path = entry?.path();
-                if path.extension().is_some_and(|e| e == "md") {
-                    if let Ok(task) = Self::load(&path, status.clone()) {
-                        tasks.push(task);
-                    }
+                if path.extension().is_some_and(|e| e == "md")
+                    && let Ok(task) = Self::load(&path, *status)
+                {
+                    tasks.push(task);
                 }
             }
         }
@@ -175,20 +181,23 @@ impl Task {
         fs::write(&path, format!("---\n{}---\n{}", yaml, body))
     }
 
-    /// Sorts tasks by status group (TODO, DOING, DONE) and by `created_at` within each group.
+    /// Sorts tasks by status group and by `created_at` within each group.
     pub fn sort(tasks: Vec<Task>) -> Vec<Task> {
+        let mut parking = Self::filter_by_status(&tasks, TaskStatus::Parking);
         let mut todos = Self::filter_by_status(&tasks, TaskStatus::Todo);
         let mut doings = Self::filter_by_status(&tasks, TaskStatus::Doing);
         let mut dones = Self::filter_by_status(&tasks, TaskStatus::Done);
+        parking.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         todos.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         doings.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         dones.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        [todos, doings, dones].concat()
+        [parking, todos, doings, dones].concat()
     }
 
     /// Filters tasks by the given status, returning cloned copies.
     fn filter_by_status(tasks: &[Task], status: TaskStatus) -> Vec<Task> {
-        tasks.iter()
+        tasks
+            .iter()
             .filter(|t| t.status == status)
             .cloned()
             .collect()
@@ -232,6 +241,9 @@ mod tests {
     #[test]
     fn sort_groups_by_status_and_orders_by_created_at() {
         // GIVEN: tasks with mixed statuses created in different order
+        let mut task_parking = Task::new("parking".to_string());
+        task_parking.status = TaskStatus::Parking;
+        thread::sleep(Duration::from_millis(10));
         let mut task_doing = Task::new("doing".to_string());
         task_doing.status = TaskStatus::Doing;
         thread::sleep(Duration::from_millis(10));
@@ -241,12 +253,27 @@ mod tests {
         task_done.status = TaskStatus::Done;
 
         // WHEN: sort is called
-        let sorted = Task::sort(vec![task_done, task_doing, task_todo]);
+        let sorted = Task::sort(vec![task_done, task_doing, task_todo, task_parking]);
 
-        // THEN: tasks are grouped by status (TODO, DOING, DONE)
-        assert_eq!(sorted[0].status, TaskStatus::Todo);
-        assert_eq!(sorted[1].status, TaskStatus::Doing);
-        assert_eq!(sorted[2].status, TaskStatus::Done);
+        // THEN: tasks are grouped by status (PARKING, TODO, DOING, DONE)
+        assert_eq!(sorted[0].status, TaskStatus::Parking);
+        assert_eq!(sorted[1].status, TaskStatus::Todo);
+        assert_eq!(sorted[2].status, TaskStatus::Doing);
+        assert_eq!(sorted[3].status, TaskStatus::Done);
+    }
+
+    #[test]
+    fn parking_file_path_contains_parking_directory() {
+        // GIVEN
+        let mut task = Task::new("parking path test".to_string());
+        task.status = TaskStatus::Parking;
+
+        // WHEN
+        let path = task.file_path();
+
+        // THEN
+        assert!(path.to_str().unwrap().contains("/parking/"));
+        assert!(path.to_str().unwrap().ends_with(&format!("{}.md", task.id)));
     }
 
     #[test]

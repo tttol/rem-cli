@@ -9,8 +9,8 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 - **Written in Rust** - Fast, safe, and reliable
 - **Local-first** - All TODO data stored on your filesystem, no cloud sync
 - **TUI** - Interactive terminal interface powered by ratatui
-- **Vim-like keybindings** - Navigate with j/k
-- **Preview panel** - View task details without leaving the TUI
+- **Vim-like keybindings** - Navigate with h/j/k/l
+- **Four status columns** - Organize tasks across PARKING / TODO / DOING / DONE
 - **Neovim integration** - Edit task files directly in neovim
 
 ## 🤔 Why rem-cli?
@@ -25,10 +25,9 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 
 ## 🚀 Features
 
-- **Three-column status management** - TODO / DOING / DONE
+- **Four-column status management** - PARKING / TODO / DOING / DONE
 - **Keyboard-driven workflow** - Add, navigate, and update tasks without touching the mouse
-- **Live preview** - Right panel (70%) shows the selected task's markdown content
-- **Lazy loading** - DONE tasks are loaded on demand to keep startup fast
+- **Lazy loading** - PARKING loads after the first frame and DONE loads on demand
 - **Neovim integration** - Press Enter to open and edit a task file in neovim
 
 ## ⌨️ Keybindings
@@ -36,8 +35,10 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 | Key | Action |
 |-----|--------|
 | `a` | Add a new task |
-| `j` / `k` | Navigate down / up |
-| `n` | Move task to next status (TODO -> DOING -> DONE) |
+| `j` / `k` | Navigate down / up within a status |
+| `h` / `l` | Navigate left / right between statuses |
+| `n` | Move task to next status (PARKING -> TODO -> DOING -> DONE) |
+| `N` | Move task to previous status (DONE -> DOING -> TODO -> PARKING) |
 | `d` | Toggle DONE tasks visibility |
 | `Enter` | Open task file in neovim |
 | `q` / `Esc` | Quit |
@@ -78,6 +79,8 @@ Tasks are stored as markdown files under `~/.rem-cli/tasks/` with directories re
 
 ```
 ~/.rem-cli/tasks/
+  parking/
+    <uuid>.md
   todo/
     <uuid>.md
   doing/

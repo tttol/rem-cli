@@ -1,13 +1,13 @@
-use std::io;
-use std::process::Command;
 use crossterm::{
-    event::{self, Event, KeyEventKind},
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
+    event::{self, Event, KeyEventKind},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::prelude::*;
 use rem_cli::app::App;
 use rem_cli::render;
+use std::io;
+use std::process::Command;
 
 /// Entry point for the rem TUI application.
 ///
@@ -29,6 +29,7 @@ fn main() -> io::Result<()> {
     // Polling events
     while !app.should_quit {
         terminal.draw(|frame| render::render(frame, &app))?;
+        app.load_parking_after_first_render();
 
         if event::poll(std::time::Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
