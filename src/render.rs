@@ -35,7 +35,7 @@ fn wrap_task_name(name: &str, width: usize) -> Text<'static> {
 fn task_text(task: &Task, width: usize) -> Text<'static> {
     let deadline = Line::styled(
         format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Color::Gray),
     );
     Text::from(
         wrap_task_name(task.name.as_str(), width)
@@ -250,14 +250,14 @@ mod tests {
     }
 
     #[test]
-    fn task_text_displays_deadline_below_name_in_dark_gray() {
+    fn task_text_displays_deadline_below_name_in_gray() {
         // GIVEN
         let task = Task::new("deadline task".to_string());
         let expected = Text::from(vec![
             Line::from("deadline task"),
             Line::styled(
                 format!("Deadline: {}", task.deadline.format("%Y-%m-%d")),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             ),
         ]);
 
