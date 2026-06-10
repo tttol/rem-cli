@@ -170,6 +170,7 @@ mod tests {
             open_file: None,
             error_message: None,
             tasks_dir: Task::default_base_dir(),
+            persistent_error: None,
         }
     }
 

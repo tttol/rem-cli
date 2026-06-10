@@ -22,6 +22,7 @@ pub struct App {
     pub open_file: Option<PathBuf>,
     pub error_message: Option<String>,
     pub(crate) tasks_dir: PathBuf,
+    pub(crate) persistent_error: Option<String>,
 }
 
 impl Default for App {
@@ -62,8 +63,9 @@ impl App {
             parking_loaded: false,
             done_loaded: false,
             open_file: None,
-            error_message,
+            error_message: error_message.clone(),
             tasks_dir,
+            persistent_error: error_message,
         }
     }
 
@@ -79,14 +81,16 @@ impl App {
         let parking_tasks = match Task::load_parking_from(&self.tasks_dir) {
             Ok(tasks) => tasks,
             Err(error) => {
-                self.error_message = Some(format!("Failed to load PARKING tasks: {error}"));
+                self.error_message = Some(
+                    self.error_with_persistent(format!("Failed to load PARKING tasks: {error}")),
+                );
                 return;
             }
         };
         self.tasks.extend(parking_tasks);
         self.tasks = Task::sort(self.tasks.clone());
         self.parking_loaded = true;
-        self.error_message = None;
+        self.error_message = self.persistent_error.clone();
         self.selected_index = selected_id
             .and_then(|id| self.tasks.iter().position(|task| task.id == id))
             .or_else(|| (!self.tasks.is_empty()).then_some(0));
@@ -309,10 +313,11 @@ impl App {
             .position(|candidate| *candidate == index)
             .unwrap_or(0);
         if let Err(error) = self.tasks[index].update_status(next_status) {
-            self.error_message = Some(format!("Failed to update task status: {error}"));
+            self.error_message =
+                Some(self.error_with_persistent(format!("Failed to update task status: {error}")));
             return;
         }
-        self.error_message = None;
+        self.error_message = self.persistent_error.clone();
         if next_status == TaskStatus::Done && !self.done_loaded {
             self.tasks.retain(|task| task.id != id);
             self.tasks = Task::sort(self.tasks.clone());
@@ -354,7 +359,8 @@ impl App {
         if !self.input_buffer.is_empty() {
             let new_task = Task::new_in(self.input_buffer.clone(), self.tasks_dir.clone());
             if let Err(error) = new_task.save() {
-                self.error_message = Some(format!("Failed to add task: {error}"));
+                self.error_message =
+                    Some(self.error_with_persistent(format!("Failed to add task: {error}")));
                 return;
             }
             self.tasks.push(new_task);
@@ -366,7 +372,7 @@ impl App {
         self.input_buffer.clear();
         self.input_cursor = 0;
         self.input_mode = Mode::Normal;
-        self.error_message = None;
+        self.error_message = self.persistent_error.clone();
     }
 
     /// Toggles the visibility of DONE tasks.
@@ -393,14 +399,16 @@ impl App {
             let done_tasks = match Task::load_done_from(&self.tasks_dir) {
                 Ok(tasks) => tasks,
                 Err(error) => {
-                    self.error_message = Some(format!("Failed to load DONE tasks: {error}"));
+                    self.error_message = Some(
+                        self.error_with_persistent(format!("Failed to load DONE tasks: {error}")),
+                    );
                     return;
                 }
             };
             self.tasks.extend(done_tasks);
             self.tasks = Task::sort(self.tasks.clone());
             self.done_loaded = true;
-            self.error_message = None;
+            self.error_message = self.persistent_error.clone();
         }
         if self.tasks.is_empty() {
             self.selected_index = None;
@@ -409,6 +417,14 @@ impl App {
         {
             self.selected_index = Some(self.tasks.len() - 1);
         }
+    }
+
+    fn error_with_persistent(&self, error: String) -> String {
+        self.persistent_error
+            .as_deref()
+            .map_or(error.clone(), |persistent| {
+                format!("{persistent} | {error}")
+            })
     }
 }
 
@@ -431,6 +447,7 @@ mod tests {
             open_file: None,
             error_message: None,
             tasks_dir: Task::default_base_dir(),
+            persistent_error: None,
         }
     }
 
@@ -496,6 +513,25 @@ mod tests {
         app.load_parking_after_first_render();
         assert!(app.parking_loaded);
         assert!(app.error_message.is_none());
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn parking_load_success_keeps_initial_load_error() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        fs::create_dir_all(&tasks_dir).unwrap();
+        fs::write(tasks_dir.join("todo"), "not a directory").unwrap();
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
+        let expected = app.error_message.clone();
+
+        // WHEN
+        app.load_parking_after_first_render();
+
+        // THEN
+        assert!(app.parking_loaded);
+        assert_eq!(app.error_message, expected);
+
         fs::remove_dir_all(tasks_dir).unwrap();
     }
 
@@ -611,6 +647,7 @@ mod tests {
             open_file: None,
             error_message: None,
             tasks_dir,
+            persistent_error: None,
         };
 
         // WHEN

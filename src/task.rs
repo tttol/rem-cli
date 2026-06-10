@@ -180,10 +180,13 @@ impl Task {
             }
             for entry in fs::read_dir(&dir)? {
                 let path = entry?.path();
-                if path.extension().is_some_and(|e| e == "md")
-                    && let Ok(task) = Self::load(&path, *status)
-                {
-                    tasks.push(task);
+                if path.extension().is_some_and(|e| e == "md") {
+                    tasks.push(Self::load(&path, *status).map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!("failed to load {}: {error}", path.display()),
+                        )
+                    })?);
                 }
             }
         }
@@ -199,10 +202,29 @@ impl Task {
         let existing = fs::read_to_string(&old_path)?;
         let content = self.content_with_updated_frontmatter(&existing, updated_at)?;
         fs::create_dir_all(new_path.parent().unwrap())?;
-        fs::rename(&old_path, &new_path)?;
-        if let Err(error) = fs::write(&new_path, content) {
-            let _ = fs::rename(&new_path, &old_path);
-            return Err(error);
+        let update_path = old_path.with_extension("md.update");
+        fs::write(&update_path, content)?;
+        if let Err(error) = fs::rename(&update_path, &old_path) {
+            let cleanup_result = fs::remove_file(&update_path);
+            return match cleanup_result {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; failed to remove temporary file: {cleanup_error}"),
+                )),
+            };
+        }
+        if let Err(move_error) = fs::rename(&old_path, &new_path) {
+            let rollback_path = old_path.with_extension("md.rollback");
+            let rollback_result = fs::write(&rollback_path, existing)
+                .and_then(|()| fs::rename(&rollback_path, &old_path));
+            return match rollback_result {
+                Ok(()) => Err(move_error),
+                Err(rollback_error) => Err(io::Error::new(
+                    move_error.kind(),
+                    format!("{move_error}; failed to restore original file: {rollback_error}"),
+                )),
+            };
         }
         self.status = new_status;
         self.updated_at = updated_at;
@@ -403,5 +425,46 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(task.status, expected_status);
         assert_eq!(task.updated_at, expected_updated_at);
+    }
+
+    #[test]
+    fn update_status_move_failure_restores_original_content() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let mut task = Task::new_in("rollback status move".to_string(), tasks_dir.clone());
+        task.save().unwrap();
+        let original_path = task.file_path();
+        let original_content = fs::read_to_string(&original_path).unwrap();
+        let conflicting_path = tasks_dir.join("doing").join(format!("{}.md", task.id));
+        fs::create_dir_all(&conflicting_path).unwrap();
+
+        // WHEN
+        let result = task.update_status(TaskStatus::Doing);
+
+        // THEN
+        assert!(result.is_err());
+        assert_eq!(task.status, TaskStatus::Todo);
+        assert_eq!(fs::read_to_string(original_path).unwrap(), original_content);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn load_by_status_returns_error_for_invalid_task_file() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let todo_dir = tasks_dir.join("todo");
+        fs::create_dir_all(&todo_dir).unwrap();
+        let invalid_path = todo_dir.join("invalid.md");
+        fs::write(&invalid_path, "invalid frontmatter").unwrap();
+
+        // WHEN
+        let result = Task::load_todo_from(&tasks_dir);
+
+        // THEN
+        let error = result.err().expect("invalid task file should fail loading");
+        assert!(error.to_string().contains(invalid_path.to_str().unwrap()));
+
+        fs::remove_dir_all(tasks_dir).unwrap();
     }
 }
