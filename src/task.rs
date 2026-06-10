@@ -1,13 +1,14 @@
-use std::fs;
-use std::io;
-use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// Represents the lifecycle status of a task.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TaskStatus {
+    Parking,
     Todo,
     Doing,
     Done,
@@ -17,12 +18,12 @@ impl TaskStatus {
     /// Returns the directory name corresponding to this status (e.g. `"todo"`, `"doing"`, `"done"`).
     fn dir_name(&self) -> &str {
         match self {
+            TaskStatus::Parking => "parking",
             TaskStatus::Todo => "todo",
             TaskStatus::Doing => "doing",
             TaskStatus::Done => "done",
         }
     }
-
 }
 
 /// Internal representation of the YAML frontmatter stored in each task's markdown file.
@@ -44,11 +45,17 @@ pub struct Task {
     pub status: TaskStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    base_dir: PathBuf,
 }
 
 impl Task {
     /// Creates a new task with the given name and TODO status.
     pub fn new(name: String) -> Self {
+        Self::new_in(name, Self::default_base_dir())
+    }
+
+    /// Creates a new task under the provided task storage directory.
+    pub fn new_in(name: String, base_dir: PathBuf) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
@@ -56,22 +63,23 @@ impl Task {
             status: TaskStatus::Todo,
             created_at: now,
             updated_at: now,
+            base_dir,
         }
     }
 
     /// Returns the base directory for all task files (`~/.rem-cli/tasks/`).
-    fn base_dir() -> PathBuf {
+    pub fn default_base_dir() -> PathBuf {
         dirs::home_dir().unwrap().join(".rem-cli/tasks")
     }
 
     /// Returns the directory path for a given status (e.g. `~/.rem-cli/tasks/todo/`).
-    fn status_dir(status: &TaskStatus) -> PathBuf {
-        Self::base_dir().join(status.dir_name())
+    fn status_dir(base_dir: &Path, status: TaskStatus) -> PathBuf {
+        base_dir.join(status.dir_name())
     }
 
     /// Returns the full file path for this task's markdown file.
     pub fn file_path(&self) -> PathBuf {
-        Self::status_dir(&self.status).join(format!("{}.md", self.id))
+        Self::status_dir(&self.base_dir, self.status).join(format!("{}.md", self.id))
     }
 
     /// Converts this task into a `TaskFrontmatter` for serialization.
@@ -101,51 +109,84 @@ impl Task {
             .split("---")
             .next()
             .unwrap_or("");
-        let fm: TaskFrontmatter =
-            serde_yaml::from_str(yaml).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let fm: TaskFrontmatter = serde_yaml::from_str(yaml)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         Ok(Self {
             id: fm.id,
             name: fm.name,
             status,
             created_at: fm.created_at,
             updated_at: fm.updated_at,
+            base_dir: path
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid task path"))?,
         })
     }
 
     /// Reloads this task's metadata from its markdown file on disk.
     pub fn reload(&self) -> io::Result<Self> {
-        Self::load(&self.file_path(), self.status.clone())
+        Self::load(&self.file_path(), self.status)
+    }
+
+    /// Loads all tasks from the `parking/` directory.
+    pub fn load_parking() -> io::Result<Vec<Self>> {
+        Self::load_parking_from(&Self::default_base_dir())
+    }
+
+    /// Loads all tasks from the `parking/` directory under the provided base directory.
+    pub fn load_parking_from(base_dir: &Path) -> io::Result<Vec<Self>> {
+        Self::load_by_status(base_dir, &[TaskStatus::Parking])
     }
 
     /// Loads all tasks from the `todo/` directory.
     pub fn load_todo() -> io::Result<Vec<Self>> {
-        Self::load_by_status(&[TaskStatus::Todo])
+        Self::load_todo_from(&Self::default_base_dir())
+    }
+
+    /// Loads all tasks from the `todo/` directory under the provided base directory.
+    pub fn load_todo_from(base_dir: &Path) -> io::Result<Vec<Self>> {
+        Self::load_by_status(base_dir, &[TaskStatus::Todo])
     }
 
     /// Loads all tasks from the `doing/` directory.
     pub fn load_doing() -> io::Result<Vec<Self>> {
-        Self::load_by_status(&[TaskStatus::Doing])
+        Self::load_doing_from(&Self::default_base_dir())
+    }
+
+    /// Loads all tasks from the `doing/` directory under the provided base directory.
+    pub fn load_doing_from(base_dir: &Path) -> io::Result<Vec<Self>> {
+        Self::load_by_status(base_dir, &[TaskStatus::Doing])
     }
 
     /// Loads all tasks from the `done/` directory.
     pub fn load_done() -> io::Result<Vec<Self>> {
-        Self::load_by_status(&[TaskStatus::Done])
+        Self::load_done_from(&Self::default_base_dir())
+    }
+
+    /// Loads all tasks from the `done/` directory under the provided base directory.
+    pub fn load_done_from(base_dir: &Path) -> io::Result<Vec<Self>> {
+        Self::load_by_status(base_dir, &[TaskStatus::Done])
     }
 
     /// Loads tasks from the directories corresponding to the given statuses, sorted by `created_at`.
-    fn load_by_status(statuses: &[TaskStatus]) -> io::Result<Vec<Self>> {
+    fn load_by_status(base_dir: &Path, statuses: &[TaskStatus]) -> io::Result<Vec<Self>> {
         let mut tasks = Vec::new();
         for status in statuses {
-            let dir = Self::status_dir(status);
+            let dir = Self::status_dir(base_dir, *status);
             if !dir.exists() {
                 continue;
             }
             for entry in fs::read_dir(&dir)? {
                 let path = entry?.path();
                 if path.extension().is_some_and(|e| e == "md") {
-                    if let Ok(task) = Self::load(&path, status.clone()) {
-                        tasks.push(task);
-                    }
+                    tasks.push(Self::load(&path, *status).map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!("failed to load {}: {error}", path.display()),
+                        )
+                    })?);
                 }
             }
         }
@@ -154,41 +195,77 @@ impl Task {
     }
 
     /// Changes this task's status and moves the file to the corresponding directory.
-    pub fn update_status(&mut self, new_status: TaskStatus) {
+    pub fn update_status(&mut self, new_status: TaskStatus) -> io::Result<()> {
         let old_path = self.file_path();
+        let new_path = Self::status_dir(&self.base_dir, new_status).join(format!("{}.md", self.id));
+        let updated_at = Utc::now();
+        let existing = fs::read_to_string(&old_path)?;
+        let content = self.content_with_updated_frontmatter(&existing, updated_at)?;
+        fs::create_dir_all(new_path.parent().unwrap())?;
+        let update_path = old_path.with_extension("md.update");
+        fs::write(&update_path, content)?;
+        if let Err(error) = fs::rename(&update_path, &old_path) {
+            let cleanup_result = fs::remove_file(&update_path);
+            return match cleanup_result {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; failed to remove temporary file: {cleanup_error}"),
+                )),
+            };
+        }
+        if let Err(move_error) = fs::rename(&old_path, &new_path) {
+            let rollback_path = old_path.with_extension("md.rollback");
+            let rollback_result = fs::write(&rollback_path, existing)
+                .and_then(|()| fs::rename(&rollback_path, &old_path));
+            return match rollback_result {
+                Ok(()) => Err(move_error),
+                Err(rollback_error) => Err(io::Error::new(
+                    move_error.kind(),
+                    format!("{move_error}; failed to restore original file: {rollback_error}"),
+                )),
+            };
+        }
         self.status = new_status;
-        self.updated_at = Utc::now();
-        let _ = fs::create_dir_all(Self::status_dir(&self.status));
-        let _ = fs::rename(old_path, self.file_path());
-        let _ = self.update_frontmatter_preserving_body();
+        self.updated_at = updated_at;
+        Ok(())
     }
 
-    /// Updates only the YAML frontmatter of the task file while preserving the markdown body.
-    fn update_frontmatter_preserving_body(&self) -> io::Result<()> {
-        let path = self.file_path();
-        let existing = fs::read_to_string(&path)?;
-        let yaml = serde_yaml::to_string(&self.frontmatter()).map_err(io::Error::other)?;
+    /// Builds updated file content while preserving the markdown body.
+    fn content_with_updated_frontmatter(
+        &self,
+        existing: &str,
+        updated_at: DateTime<Utc>,
+    ) -> io::Result<String> {
+        let frontmatter = TaskFrontmatter {
+            updated_at,
+            ..self.frontmatter()
+        };
+        let yaml = serde_yaml::to_string(&frontmatter).map_err(io::Error::other)?;
         let body = existing
             .strip_prefix("---\n")
             .and_then(|s| s.find("\n---\n").map(|pos| &s[pos + 5..]))
             .unwrap_or("");
-        fs::write(&path, format!("---\n{}---\n{}", yaml, body))
+        Ok(format!("---\n{}---\n{}", yaml, body))
     }
 
-    /// Sorts tasks by status group (TODO, DOING, DONE) and by `created_at` within each group.
+    /// Sorts tasks by status group and by `created_at` within each group.
     pub fn sort(tasks: Vec<Task>) -> Vec<Task> {
+        let mut parking = Self::filter_by_status(&tasks, TaskStatus::Parking);
         let mut todos = Self::filter_by_status(&tasks, TaskStatus::Todo);
         let mut doings = Self::filter_by_status(&tasks, TaskStatus::Doing);
         let mut dones = Self::filter_by_status(&tasks, TaskStatus::Done);
+        parking.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         todos.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         doings.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         dones.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        [todos, doings, dones].concat()
+        [parking, todos, doings, dones].concat()
     }
 
     /// Filters tasks by the given status, returning cloned copies.
     fn filter_by_status(tasks: &[Task], status: TaskStatus) -> Vec<Task> {
-        tasks.iter()
+        tasks
+            .iter()
             .filter(|t| t.status == status)
             .cloned()
             .collect()
@@ -200,6 +277,10 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::Duration;
+
+    fn temporary_tasks_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("rem-cli-task-test-{}", Uuid::new_v4()))
+    }
 
     #[test]
     fn file_path_contains_status_dir_and_uuid() {
@@ -232,6 +313,9 @@ mod tests {
     #[test]
     fn sort_groups_by_status_and_orders_by_created_at() {
         // GIVEN: tasks with mixed statuses created in different order
+        let mut task_parking = Task::new("parking".to_string());
+        task_parking.status = TaskStatus::Parking;
+        thread::sleep(Duration::from_millis(10));
         let mut task_doing = Task::new("doing".to_string());
         task_doing.status = TaskStatus::Doing;
         thread::sleep(Duration::from_millis(10));
@@ -241,12 +325,27 @@ mod tests {
         task_done.status = TaskStatus::Done;
 
         // WHEN: sort is called
-        let sorted = Task::sort(vec![task_done, task_doing, task_todo]);
+        let sorted = Task::sort(vec![task_done, task_doing, task_todo, task_parking]);
 
-        // THEN: tasks are grouped by status (TODO, DOING, DONE)
-        assert_eq!(sorted[0].status, TaskStatus::Todo);
-        assert_eq!(sorted[1].status, TaskStatus::Doing);
-        assert_eq!(sorted[2].status, TaskStatus::Done);
+        // THEN: tasks are grouped by status (PARKING, TODO, DOING, DONE)
+        assert_eq!(sorted[0].status, TaskStatus::Parking);
+        assert_eq!(sorted[1].status, TaskStatus::Todo);
+        assert_eq!(sorted[2].status, TaskStatus::Doing);
+        assert_eq!(sorted[3].status, TaskStatus::Done);
+    }
+
+    #[test]
+    fn parking_file_path_contains_parking_directory() {
+        // GIVEN
+        let mut task = Task::new("parking path test".to_string());
+        task.status = TaskStatus::Parking;
+
+        // WHEN
+        let path = task.file_path();
+
+        // THEN
+        assert!(path.to_str().unwrap().contains("/parking/"));
+        assert!(path.to_str().unwrap().ends_with(&format!("{}.md", task.id)));
     }
 
     #[test]
@@ -268,7 +367,8 @@ mod tests {
     #[test]
     fn save_and_load_roundtrip() {
         // GIVEN: a task saved to disk
-        let task = Task::new("roundtrip test".to_string());
+        let tasks_dir = temporary_tasks_dir();
+        let task = Task::new_in("roundtrip test".to_string(), tasks_dir.clone());
         task.save().unwrap();
 
         // WHEN: Task::load is called with the file path
@@ -279,13 +379,14 @@ mod tests {
         assert_eq!(loaded.name, "roundtrip test");
         assert_eq!(loaded.status, TaskStatus::Todo);
 
-        let _ = fs::remove_file(task.file_path());
+        fs::remove_dir_all(tasks_dir).unwrap();
     }
 
     #[test]
     fn update_status_moves_file_between_directories() {
         // GIVEN: a saved task with TODO status and a markdown body appended to the file
-        let mut task = Task::new("status move test".to_string());
+        let tasks_dir = temporary_tasks_dir();
+        let mut task = Task::new_in("status move test".to_string(), tasks_dir.clone());
         task.save().unwrap();
         let body = "## Notes\n\nsome content here\n";
         let existing = fs::read_to_string(task.file_path()).unwrap();
@@ -296,7 +397,7 @@ mod tests {
         // WHEN: update_status is called with Doing
         thread::sleep(Duration::from_millis(10));
         let before_update = task.updated_at;
-        task.update_status(TaskStatus::Doing);
+        task.update_status(TaskStatus::Doing).unwrap();
 
         // THEN: the file is moved to doing/ directory, updated_at is refreshed, and body content is preserved
         assert!(!old_path.exists());
@@ -306,6 +407,64 @@ mod tests {
         let content = fs::read_to_string(task.file_path()).unwrap();
         assert!(content.contains(body));
 
-        let _ = fs::remove_file(task.file_path());
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn update_status_failure_keeps_original_state() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let mut task = Task::new_in("failed status move".to_string(), tasks_dir);
+        let expected_status = task.status;
+        let expected_updated_at = task.updated_at;
+
+        // WHEN
+        let result = task.update_status(TaskStatus::Doing);
+
+        // THEN
+        assert!(result.is_err());
+        assert_eq!(task.status, expected_status);
+        assert_eq!(task.updated_at, expected_updated_at);
+    }
+
+    #[test]
+    fn update_status_move_failure_restores_original_content() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let mut task = Task::new_in("rollback status move".to_string(), tasks_dir.clone());
+        task.save().unwrap();
+        let original_path = task.file_path();
+        let original_content = fs::read_to_string(&original_path).unwrap();
+        let conflicting_path = tasks_dir.join("doing").join(format!("{}.md", task.id));
+        fs::create_dir_all(&conflicting_path).unwrap();
+
+        // WHEN
+        let result = task.update_status(TaskStatus::Doing);
+
+        // THEN
+        assert!(result.is_err());
+        assert_eq!(task.status, TaskStatus::Todo);
+        assert_eq!(fs::read_to_string(original_path).unwrap(), original_content);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn load_by_status_returns_error_for_invalid_task_file() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let todo_dir = tasks_dir.join("todo");
+        fs::create_dir_all(&todo_dir).unwrap();
+        let invalid_path = todo_dir.join("invalid.md");
+        fs::write(&invalid_path, "invalid frontmatter").unwrap();
+
+        // WHEN
+        let result = Task::load_todo_from(&tasks_dir);
+
+        // THEN
+        let error = result.err().expect("invalid task file should fail loading");
+        assert!(error.to_string().contains(invalid_path.to_str().unwrap()));
+
+        fs::remove_dir_all(tasks_dir).unwrap();
     }
 }

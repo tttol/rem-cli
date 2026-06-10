@@ -1,101 +1,90 @@
+use crate::app::{App, Mode};
+use crate::task::TaskStatus;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
-use crate::app::{App, Mode};
-use crate::task::TaskStatus;
 
-/// タスク名をパネル幅に合わせて折り返す。
-/// 単語の途中で折り返さず、スペース区切りでワードラップする。
+/// Wraps a task name to the available panel width.
 fn wrap_task_name(name: &str, width: usize) -> Text<'static> {
-    if width == 0 || name.chars().count() <= width {
+    if width == 0 || Line::from(name).width() <= width {
         return Text::from(name.to_string());
     }
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut current_line = String::new();
-    for word in name.split_whitespace() {
-        let word_len = word.chars().count();
-        let line_len = current_line.chars().count();
-        if line_len == 0 {
-            current_line.push_str(word);
-        } else if line_len + 1 + word_len <= width {
-            current_line.push(' ');
-            current_line.push_str(word);
-        } else {
-            lines.push(Line::from(current_line.clone()));
-            current_line = word.to_string();
-        }
-    }
-    if !current_line.is_empty() {
+    let (mut lines, current_line) = name.chars().fold(
+        (Vec::new(), String::new()),
+        |(mut lines, current_line), character| {
+            if character == '\n' {
+                lines.push(Line::from(current_line));
+                return (lines, String::new());
+            }
+            let candidate = format!("{current_line}{character}");
+            if !current_line.is_empty() && Line::from(candidate.as_str()).width() > width {
+                lines.push(Line::from(current_line));
+                return (lines, character.to_string());
+            }
+            (lines, candidate)
+        },
+    );
+    if !current_line.is_empty() || lines.is_empty() {
         lines.push(Line::from(current_line));
     }
     Text::from(lines)
 }
 
+fn status_title_style(status: TaskStatus) -> Style {
+    let background = match status {
+        TaskStatus::Parking | TaskStatus::Done => Color::DarkGray,
+        TaskStatus::Todo => Color::Rgb(140, 20, 20),
+        TaskStatus::Doing => Color::Rgb(20, 110, 45),
+    };
+    Style::default().fg(Color::White).bg(background)
+}
+
 /// Renders the entire TUI layout.
 ///
 /// Layout structure:
-/// - Left 30%: Task list panels (TODO, DOING, DONE)
-/// - Right 70%: Preview panel showing the selected task's markdown content
+/// - Main area: PARKING, TODO, DOING, and optionally DONE columns
 /// - Bottom: Input field (Editing mode) or keybinding help (Normal mode)
-///
-/// The DONE panel is minimized to a border-only row when `done_loaded` is false.
 pub fn render(frame: &mut Frame, app: &App) {
     let outer = if app.input_mode == Mode::Editing {
-        Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(3),
-        ])
-        .split(frame.area())
+        Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).split(frame.area())
     } else {
-        Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(frame.area())
+        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area())
     };
 
-    // Left 30% task lists, Right 70% preview
-    let h_chunks = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(70),
-    ])
-    .split(outer[0]);
-
-    // Left: task list panels
-    let list_chunks = if app.done_loaded {
-        Layout::vertical([
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-        ])
-        .split(h_chunks[0])
+    let statuses = if app.done_loaded {
+        vec![
+            (TaskStatus::Parking, " PARKING "),
+            (TaskStatus::Todo, " TODO "),
+            (TaskStatus::Doing, " DOING "),
+            (TaskStatus::Done, " DONE "),
+        ]
     } else {
-        Layout::vertical([
-            Constraint::Ratio(1, 2),
-            Constraint::Ratio(1, 2),
-            Constraint::Length(3),
-        ])
-        .split(h_chunks[0])
+        vec![
+            (TaskStatus::Parking, " PARKING "),
+            (TaskStatus::Todo, " TODO "),
+            (TaskStatus::Doing, " DOING "),
+        ]
     };
+    let constraints = vec![Constraint::Ratio(1, statuses.len() as u32); statuses.len()];
+    let columns = Layout::horizontal(constraints).split(outer[0]);
 
-    // ボーダー2文字分を引いたリストパネルの実効幅
-    let list_width = (frame.area().width as usize * 30 / 100).saturating_sub(2);
-
-    let active_statuses = [
-        (TaskStatus::Todo, " TODO "),
-        (TaskStatus::Doing, " DOING "),
-    ];
-    for (i, (status, title)) in active_statuses.iter().enumerate() {
+    for (column, ((status, title), area)) in statuses.iter().zip(columns.iter()).enumerate() {
         let mut selected_in_group: Option<usize> = None;
-        let items: Vec<ListItem> = app.tasks.iter().enumerate()
+        let items: Vec<ListItem> = app
+            .tasks
+            .iter()
+            .enumerate()
             .filter(|(_, t)| t.status == *status)
             .enumerate()
             .map(|(group_idx, (global_idx, t))| {
                 if app.selected_index == Some(global_idx) {
                     selected_in_group = Some(group_idx);
                 }
-                ListItem::new(wrap_task_name(t.name.as_str(), list_width))
+                ListItem::new(wrap_task_name(
+                    t.name.as_str(),
+                    area.width.saturating_sub(2) as usize,
+                ))
             })
             .collect();
         let border_style = if selected_in_group.is_some() {
@@ -104,58 +93,165 @@ pub fn render(frame: &mut Frame, app: &App) {
             Style::default()
         };
         let list = List::new(items)
-            .block(Block::default().title(*title).borders(Borders::ALL).border_style(border_style))
+            .block(
+                Block::default()
+                    .title(*title)
+                    .title_style(status_title_style(*status))
+                    .borders(Borders::ALL)
+                    .border_style(border_style),
+            )
             .highlight_style(Style::default().bg(Color::DarkGray));
         let mut state = ListState::default();
         state.select(selected_in_group);
-        frame.render_stateful_widget(list, list_chunks[i], &mut state);
+        frame.render_stateful_widget(list, columns[column], &mut state);
     }
 
-    if app.done_loaded {
-        let mut selected_in_group: Option<usize> = None;
-        let items: Vec<ListItem> = app.tasks.iter().enumerate()
-            .filter(|(_, t)| t.status == TaskStatus::Done)
-            .enumerate()
-            .map(|(group_idx, (global_idx, t))| {
-                if app.selected_index == Some(global_idx) {
-                    selected_in_group = Some(group_idx);
-                }
-                ListItem::new(wrap_task_name(t.name.as_str(), list_width))
-            })
-            .collect();
-        let border_style = if selected_in_group.is_some() {
-            Style::default().fg(Color::Green)
-        } else {
-            Style::default()
-        };
-        let list = List::new(items)
-            .block(Block::default().title(" DONE ").borders(Borders::ALL).border_style(border_style))
-            .highlight_style(Style::default().bg(Color::DarkGray));
-        let mut state = ListState::default();
-        state.select(selected_in_group);
-        frame.render_stateful_widget(list, list_chunks[2], &mut state);
-    } else {
-        let block = Block::default().title(" DONE (d to load) ").borders(Borders::ALL);
-        frame.render_widget(block, list_chunks[2]);
-    }
-
-    // Right: preview panel
-    let preview = Paragraph::new(app.preview_content.as_str())
-        .block(Block::default().title(" Preview ").borders(Borders::ALL))
-        .wrap(ratatui::widgets::Wrap { trim: false });
-    frame.render_widget(preview, h_chunks[1]);
-
-    // Bottom: input or help
     if app.input_mode == Mode::Editing {
+        let cursor_prefix = app
+            .input_buffer
+            .chars()
+            .take(app.input_cursor)
+            .collect::<String>();
+        let cursor_width = Line::from(cursor_prefix.as_str()).width() as u16;
+        let input_width = outer[1].width.saturating_sub(2).max(1);
+        let horizontal_offset = cursor_width.saturating_sub(input_width.saturating_sub(1));
+        let input_title = app
+            .error_message
+            .as_deref()
+            .unwrap_or("New Task (Enter: confirm, Esc: cancel)");
+        let input_style = app
+            .error_message
+            .as_ref()
+            .map_or_else(Style::default, |_| Style::default().fg(Color::Red));
         let input = Paragraph::new(app.input_buffer.as_str())
-            .block(Block::default().title(" New Task (Enter: confirm, Esc: cancel) ").borders(Borders::ALL));
+            .block(
+                Block::default()
+                    .title(format!(" {input_title} "))
+                    .borders(Borders::ALL),
+            )
+            .style(input_style)
+            .scroll((0, horizontal_offset));
         frame.render_widget(input, outer[1]);
         frame.set_cursor_position((
-            outer[1].x + 1 + app.input_buffer.len() as u16,
+            outer[1].x + 1 + cursor_width.saturating_sub(horizontal_offset),
             outer[1].y + 1,
         ));
     } else {
-        let help = Paragraph::new(" a: add | j/k: select | n: forward | d: toggle done | q: quit ");
+        let (message, style) = app.error_message.as_deref().map_or_else(
+            || {
+                (
+                    " a: add | j/k: up/down | h/l: left/right | n/N: status | d: toggle done | q: quit ",
+                    Style::default(),
+                )
+            },
+            |error| (error, Style::default().fg(Color::Red)),
+        );
+        let help = Paragraph::new(message).style(style);
         frame.render_widget(help, outer[1]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task::Task;
+    use ratatui::backend::TestBackend;
+
+    fn create_app(done_loaded: bool) -> App {
+        App {
+            should_quit: false,
+            input_mode: Mode::Normal,
+            input_buffer: String::new(),
+            input_cursor: 0,
+            tasks: Vec::new(),
+            selected_index: None,
+            parking_loaded: false,
+            done_loaded,
+            open_file: None,
+            error_message: None,
+            tasks_dir: Task::default_base_dir(),
+            persistent_error: None,
+        }
+    }
+
+    fn rendered_text(done_loaded: bool) -> String {
+        let backend = TestBackend::new(120, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let app = create_app(done_loaded);
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .filter_map(|x| buffer.cell((x, y)))
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn renders_three_columns_without_done() {
+        // GIVEN
+        let expected_titles = ["PARKING", "TODO", "DOING"];
+
+        // WHEN
+        let actual = rendered_text(false);
+
+        // THEN
+        assert!(expected_titles.iter().all(|title| actual.contains(title)));
+        assert!(!actual.contains("DONE"));
+        assert!(!actual.contains("Preview"));
+    }
+
+    #[test]
+    fn renders_four_columns_with_done() {
+        // GIVEN
+        let expected_titles = ["PARKING", "TODO", "DOING", "DONE"];
+
+        // WHEN
+        let actual = rendered_text(true);
+
+        // THEN
+        assert!(expected_titles.iter().all(|title| actual.contains(title)));
+        assert!(!actual.contains("Preview"));
+    }
+
+    #[test]
+    fn wraps_long_task_name_without_spaces() {
+        // GIVEN
+        let task_name = "長いタスクタイトル全文表示";
+        let width = 8;
+        let expected = Text::from(vec![
+            Line::from("長いタス"),
+            Line::from("クタイト"),
+            Line::from("ル全文表"),
+            Line::from("示"),
+        ]);
+
+        // WHEN
+        let actual = wrap_task_name(task_name, width);
+
+        // THEN
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn status_titles_have_expected_background_colors() {
+        // GIVEN
+        let cases = [
+            (TaskStatus::Parking, Color::DarkGray),
+            (TaskStatus::Todo, Color::Rgb(140, 20, 20)),
+            (TaskStatus::Doing, Color::Rgb(20, 110, 45)),
+            (TaskStatus::Done, Color::DarkGray),
+        ];
+
+        // WHEN
+        let actual = cases.map(|(status, _)| status_title_style(status).bg);
+        let expected = cases.map(|(_, color)| Some(color));
+
+        // THEN
+        assert_eq!(actual, expected);
     }
 }
