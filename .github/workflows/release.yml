@@ -27,6 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Setup Rust
@@ -227,6 +228,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: main
 
       - name: Download all artifacts
         uses: actions/download-artifact@v8
