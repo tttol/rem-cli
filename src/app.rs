@@ -1,12 +1,27 @@
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crate::task::{Task, TaskStatus};
+use crate::voice::{VoiceCommand, VoiceEvent};
 
-#[derive(PartialEq)]
+const VOICE_LONG_PRESS_DURATION: Duration = Duration::from_millis(400);
+const VOICE_FALLBACK_TAP_DURATION: Duration = Duration::from_millis(700);
+const VOICE_RECORDING_LIMIT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, PartialEq)]
 pub enum Mode {
     Normal,
     Editing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VoiceState {
+    Idle,
+    Authorizing,
+    Recording,
+    Recognizing,
+    Failed(String),
 }
 
 /// Application state and core logic for the TUI.
@@ -21,8 +36,17 @@ pub struct App {
     pub done_loaded: bool,
     pub open_file: Option<PathBuf>,
     pub error_message: Option<String>,
+    pub voice_state: VoiceState,
+    pub voice_partial: String,
     pub(crate) tasks_dir: PathBuf,
     pub(crate) persistent_error: Option<String>,
+    pub(crate) voice_enabled: bool,
+    pub(crate) keyboard_release_supported: bool,
+    pub(crate) voice_key_pressed_at: Option<Instant>,
+    pub(crate) voice_recording_started_at: Option<Instant>,
+    pub(crate) pending_voice_command: Option<VoiceCommand>,
+    pub(crate) voice_stop_requested: bool,
+    pub(crate) voice_last_key_event_at: Option<Instant>,
 }
 
 impl Default for App {
@@ -64,9 +88,24 @@ impl App {
             done_loaded: false,
             open_file: None,
             error_message: error_message.clone(),
+            voice_state: VoiceState::Idle,
+            voice_partial: String::new(),
             tasks_dir,
             persistent_error: error_message,
+            voice_enabled: false,
+            keyboard_release_supported: false,
+            voice_key_pressed_at: None,
+            voice_recording_started_at: None,
+            pending_voice_command: None,
+            voice_stop_requested: false,
+            voice_last_key_event_at: None,
         }
+    }
+
+    /// Configures whether voice input and key-release events are available.
+    pub fn configure_voice_input(&mut self, voice_enabled: bool, keyboard_release_supported: bool) {
+        self.voice_enabled = voice_enabled;
+        self.keyboard_release_supported = keyboard_release_supported;
     }
 
     /// Loads PARKING tasks once after the first frame has been rendered.
@@ -97,14 +136,30 @@ impl App {
     }
 
     /// Dispatches a key event to the appropriate handler based on the current input mode.
-    pub fn handle_key_event(&mut self, key_code: KeyCode) {
+    pub fn handle_key_event(&mut self, key_event: impl Into<KeyEvent>) {
+        self.handle_key_event_at(key_event.into(), Instant::now());
+    }
+
+    fn handle_key_event_at(&mut self, key_event: KeyEvent, now: Instant) {
+        if self.input_mode == Mode::Editing
+            && self.voice_enabled
+            && !self.keyboard_release_supported
+            && self.voice_key_pressed_at.is_some()
+            && key_event.code != KeyCode::Char('v')
+            && key_event.kind != KeyEventKind::Release
+        {
+            self.voice_key_pressed_at = None;
+            self.insert_character_at_cursor('v');
+        }
         match self.input_mode {
-            Mode::Normal => match key_code {
+            Mode::Normal if key_event.kind != KeyEventKind::Release => match key_event.code {
                 KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
                 KeyCode::Char('a') => {
                     self.input_mode = Mode::Editing;
                     self.input_buffer.clear();
                     self.input_cursor = 0;
+                    self.voice_state = VoiceState::Idle;
+                    self.voice_partial.clear();
                 }
                 KeyCode::Char('j') | KeyCode::Down => self.select_next(),
                 KeyCode::Char('k') | KeyCode::Up => self.select_previous(),
@@ -116,14 +171,27 @@ impl App {
                 KeyCode::Enter => self.open_task(),
                 _ => {}
             },
-            Mode::Editing => match key_code {
+            Mode::Normal => {}
+            Mode::Editing if key_event.code == KeyCode::Char('v') && self.voice_enabled => {
+                self.handle_voice_key(key_event.kind, now);
+            }
+            Mode::Editing if key_event.kind == KeyEventKind::Release => {}
+            Mode::Editing => match key_event.code {
                 KeyCode::Enter => {
-                    self.add_task();
+                    if !self.voice_is_active() {
+                        self.add_task();
+                    }
                 }
                 KeyCode::Esc => {
-                    self.input_buffer.clear();
-                    self.input_cursor = 0;
-                    self.input_mode = Mode::Normal;
+                    if self.voice_is_active() {
+                        self.cancel_voice_input();
+                    } else {
+                        self.input_buffer.clear();
+                        self.input_cursor = 0;
+                        self.input_mode = Mode::Normal;
+                        self.voice_state = VoiceState::Idle;
+                        self.voice_partial.clear();
+                    }
                 }
                 KeyCode::Left => self.input_cursor = self.input_cursor.saturating_sub(1),
                 KeyCode::Right => {
@@ -137,7 +205,184 @@ impl App {
         }
     }
 
+    fn handle_voice_key(&mut self, kind: KeyEventKind, now: Instant) {
+        let previous_key_event = self.voice_last_key_event_at.replace(now);
+        if matches!(self.voice_state, VoiceState::Failed(_)) {
+            self.voice_state = VoiceState::Idle;
+        }
+        if self.voice_state == VoiceState::Recording && kind == KeyEventKind::Press {
+            if !self.keyboard_release_supported
+                && previous_key_event.is_some_and(|previous| {
+                    now.duration_since(previous) < Duration::from_millis(250)
+                })
+            {
+                return;
+            }
+            self.stop_voice_input();
+            return;
+        }
+        if self.voice_is_active() && kind != KeyEventKind::Release {
+            return;
+        }
+        match kind {
+            KeyEventKind::Press if self.voice_key_pressed_at.is_none() => {
+                self.voice_key_pressed_at = Some(now);
+            }
+            KeyEventKind::Press | KeyEventKind::Repeat => {
+                let elapsed = self
+                    .voice_key_pressed_at
+                    .map(|started| now.duration_since(started));
+                if !self.keyboard_release_supported
+                    && kind == KeyEventKind::Press
+                    && elapsed.is_some_and(|duration| duration < VOICE_LONG_PRESS_DURATION)
+                {
+                    self.voice_key_pressed_at = Some(now);
+                    self.insert_character_at_cursor('v');
+                } else if elapsed.is_some_and(|duration| duration >= VOICE_LONG_PRESS_DURATION) {
+                    self.start_voice_input();
+                }
+            }
+            KeyEventKind::Release => {
+                if self.voice_state == VoiceState::Recording {
+                    self.stop_voice_input();
+                    return;
+                }
+                if self.voice_state == VoiceState::Authorizing {
+                    self.voice_key_pressed_at = None;
+                    self.voice_stop_requested = true;
+                    return;
+                }
+                if self.voice_state == VoiceState::Recognizing {
+                    self.voice_key_pressed_at = None;
+                    return;
+                }
+                let is_long_press = self.voice_key_pressed_at.is_some_and(|started| {
+                    now.duration_since(started) >= VOICE_LONG_PRESS_DURATION
+                });
+                self.voice_key_pressed_at = None;
+                if is_long_press {
+                    if self.voice_state == VoiceState::Recording {
+                        self.stop_voice_input();
+                    } else if self.voice_state == VoiceState::Idle {
+                        self.start_voice_input();
+                    }
+                } else {
+                    self.insert_character_at_cursor('v');
+                }
+            }
+        }
+    }
+
+    /// Advances time-based voice input behavior.
+    pub fn tick(&mut self, now: Instant) {
+        if self.keyboard_release_supported
+            && self.voice_state == VoiceState::Idle
+            && self
+                .voice_key_pressed_at
+                .is_some_and(|started| now.duration_since(started) >= VOICE_LONG_PRESS_DURATION)
+        {
+            self.start_voice_input();
+        } else if !self.keyboard_release_supported
+            && self.voice_state == VoiceState::Idle
+            && self
+                .voice_key_pressed_at
+                .is_some_and(|started| now.duration_since(started) >= VOICE_FALLBACK_TAP_DURATION)
+        {
+            self.voice_key_pressed_at = None;
+            self.insert_character_at_cursor('v');
+        }
+        if self.voice_state == VoiceState::Recording
+            && self
+                .voice_recording_started_at
+                .is_some_and(|started| now.duration_since(started) >= VOICE_RECORDING_LIMIT)
+        {
+            self.stop_voice_input();
+        }
+    }
+
+    fn start_voice_input(&mut self) {
+        if !self.keyboard_release_supported {
+            self.voice_key_pressed_at = None;
+        }
+        self.voice_partial.clear();
+        self.voice_stop_requested = false;
+        self.voice_state = VoiceState::Authorizing;
+        self.pending_voice_command = Some(VoiceCommand::Start);
+    }
+
+    fn stop_voice_input(&mut self) {
+        self.voice_key_pressed_at = None;
+        self.voice_recording_started_at = None;
+        self.voice_state = VoiceState::Recognizing;
+        self.pending_voice_command = Some(VoiceCommand::Stop);
+    }
+
+    fn cancel_voice_input(&mut self) {
+        self.voice_key_pressed_at = None;
+        self.voice_recording_started_at = None;
+        self.voice_partial.clear();
+        self.voice_stop_requested = false;
+        self.voice_last_key_event_at = None;
+        self.voice_state = VoiceState::Idle;
+        self.pending_voice_command = Some(VoiceCommand::Cancel);
+    }
+
+    fn voice_is_active(&self) -> bool {
+        matches!(
+            self.voice_state,
+            VoiceState::Authorizing | VoiceState::Recording | VoiceState::Recognizing
+        )
+    }
+
+    /// Returns the next command for the platform speech service.
+    pub fn take_voice_command(&mut self) -> Option<VoiceCommand> {
+        self.pending_voice_command.take()
+    }
+
+    /// Applies an asynchronous event received from the platform speech service.
+    pub fn handle_voice_event(&mut self, event: VoiceEvent) {
+        match event {
+            VoiceEvent::Authorizing => self.voice_state = VoiceState::Authorizing,
+            VoiceEvent::Recording => {
+                if self.voice_stop_requested {
+                    self.stop_voice_input();
+                } else {
+                    self.voice_state = VoiceState::Recording;
+                    self.voice_recording_started_at = Some(Instant::now());
+                }
+            }
+            VoiceEvent::Recognizing => {
+                self.voice_state = VoiceState::Recognizing;
+                self.voice_recording_started_at = None;
+            }
+            VoiceEvent::Partial(text) => self.voice_partial = text,
+            VoiceEvent::Final(text) => {
+                let transcript = text.trim();
+                if transcript.is_empty() {
+                    self.voice_state = VoiceState::Failed("No speech was recognized".to_string());
+                } else {
+                    self.insert_text_at_cursor(transcript);
+                    self.voice_state = VoiceState::Idle;
+                }
+                self.voice_partial.clear();
+                self.voice_recording_started_at = None;
+                self.voice_stop_requested = false;
+            }
+            VoiceEvent::PermissionDenied(message)
+            | VoiceEvent::Unavailable(message)
+            | VoiceEvent::Error(message) => {
+                self.voice_state = VoiceState::Failed(message);
+                self.voice_partial.clear();
+                self.voice_recording_started_at = None;
+                self.voice_stop_requested = false;
+            }
+        }
+    }
+
     fn insert_character_at_cursor(&mut self, character: char) {
+        if matches!(self.voice_state, VoiceState::Failed(_)) {
+            self.voice_state = VoiceState::Idle;
+        }
         let byte_index = self
             .input_buffer
             .char_indices()
@@ -145,6 +390,16 @@ impl App {
             .map_or(self.input_buffer.len(), |(index, _)| index);
         self.input_buffer.insert(byte_index, character);
         self.input_cursor += 1;
+    }
+
+    fn insert_text_at_cursor(&mut self, text: &str) {
+        let byte_index = self
+            .input_buffer
+            .char_indices()
+            .nth(self.input_cursor)
+            .map_or(self.input_buffer.len(), |(index, _)| index);
+        self.input_buffer.insert_str(byte_index, text);
+        self.input_cursor += text.chars().count();
     }
 
     fn delete_character_before_cursor(&mut self) {
@@ -372,6 +627,8 @@ impl App {
         self.input_buffer.clear();
         self.input_cursor = 0;
         self.input_mode = Mode::Normal;
+        self.voice_state = VoiceState::Idle;
+        self.voice_partial.clear();
         self.error_message = self.persistent_error.clone();
     }
 
@@ -431,6 +688,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyModifiers;
     use std::fs;
     use uuid::Uuid;
 
@@ -446,8 +704,17 @@ mod tests {
             done_loaded: false,
             open_file: None,
             error_message: None,
+            voice_state: VoiceState::Idle,
+            voice_partial: String::new(),
             tasks_dir: Task::default_base_dir(),
             persistent_error: None,
+            voice_enabled: false,
+            keyboard_release_supported: false,
+            voice_key_pressed_at: None,
+            voice_recording_started_at: None,
+            pending_voice_command: None,
+            voice_stop_requested: false,
+            voice_last_key_event_at: None,
         }
     }
 
@@ -459,6 +726,10 @@ mod tests {
 
     fn temporary_tasks_dir() -> PathBuf {
         std::env::temp_dir().join(format!("rem-cli-app-test-{}", Uuid::new_v4()))
+    }
+
+    fn voice_key(kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(KeyCode::Char('v'), KeyModifiers::NONE, kind)
     }
 
     #[test]
@@ -631,6 +902,256 @@ mod tests {
     }
 
     #[test]
+    fn short_voice_key_press_inserts_v() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        app.input_mode = Mode::Editing;
+        app.configure_voice_input(true, true);
+        let pressed_at = Instant::now();
+        app.handle_key_event_at(voice_key(KeyEventKind::Press), pressed_at);
+        let expected = "v";
+
+        // WHEN
+        app.handle_key_event_at(
+            voice_key(KeyEventKind::Release),
+            pressed_at + Duration::from_millis(100),
+        );
+
+        // THEN
+        assert_eq!(app.input_buffer, expected);
+        assert_eq!(app.voice_state, VoiceState::Idle);
+    }
+
+    #[test]
+    fn long_voice_key_press_requests_recording() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        app.input_mode = Mode::Editing;
+        app.configure_voice_input(true, true);
+        let pressed_at = Instant::now();
+        app.handle_key_event_at(voice_key(KeyEventKind::Press), pressed_at);
+        let expected = Some(VoiceCommand::Start);
+
+        // WHEN
+        app.tick(pressed_at + VOICE_LONG_PRESS_DURATION);
+
+        // THEN
+        assert_eq!(app.voice_state, VoiceState::Authorizing);
+        assert_eq!(app.take_voice_command(), expected);
+    }
+
+    #[test]
+    fn releasing_voice_key_stops_recording() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        app.input_mode = Mode::Editing;
+        app.configure_voice_input(true, true);
+        let pressed_at = Instant::now();
+        app.handle_key_event_at(voice_key(KeyEventKind::Press), pressed_at);
+        app.tick(pressed_at + VOICE_LONG_PRESS_DURATION);
+        app.take_voice_command();
+        app.handle_voice_event(VoiceEvent::Recording);
+        let expected = Some(VoiceCommand::Stop);
+
+        // WHEN
+        app.handle_key_event_at(
+            voice_key(KeyEventKind::Release),
+            pressed_at + Duration::from_secs(1),
+        );
+
+        // THEN
+        assert_eq!(app.voice_state, VoiceState::Recognizing);
+        assert_eq!(app.take_voice_command(), expected);
+    }
+
+    #[test]
+    fn fallback_ignores_key_repeat_and_stops_on_next_press() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        app.input_mode = Mode::Editing;
+        app.configure_voice_input(true, false);
+        let pressed_at = Instant::now();
+        app.handle_key_event_at(voice_key(KeyEventKind::Press), pressed_at);
+        app.handle_key_event_at(
+            voice_key(KeyEventKind::Press),
+            pressed_at + VOICE_LONG_PRESS_DURATION,
+        );
+        app.take_voice_command();
+        app.handle_voice_event(VoiceEvent::Recording);
+        app.handle_key_event_at(
+            voice_key(KeyEventKind::Press),
+            pressed_at + Duration::from_millis(450),
+        );
+        let expected = Some(VoiceCommand::Stop);
+
+        // WHEN
+        app.handle_key_event_at(
+            voice_key(KeyEventKind::Press),
+            pressed_at + Duration::from_millis(800),
+        );
+
+        // THEN
+        assert_eq!(app.voice_state, VoiceState::Recognizing);
+        assert_eq!(app.take_voice_command(), expected);
+    }
+
+    #[test]
+    fn fallback_preserves_v_before_following_text() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        app.input_mode = Mode::Editing;
+        app.configure_voice_input(true, false);
+        let pressed_at = Instant::now();
+        app.handle_key_event_at(voice_key(KeyEventKind::Press), pressed_at);
+        let expected = "vi";
+
+        // WHEN
+        app.handle_key_event_at(
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+            pressed_at + Duration::from_millis(100),
+        );
+
+        // THEN
+        assert_eq!(app.input_buffer, expected);
+    }
+
+    #[test]
+    fn fallback_preserves_quick_repeated_v_characters() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        app.input_mode = Mode::Editing;
+        app.configure_voice_input(true, false);
+        let pressed_at = Instant::now();
+        app.handle_key_event_at(voice_key(KeyEventKind::Press), pressed_at);
+        app.handle_key_event_at(
+            voice_key(KeyEventKind::Press),
+            pressed_at + Duration::from_millis(100),
+        );
+        let expected = "vv";
+
+        // WHEN
+        app.tick(pressed_at + Duration::from_secs(1));
+
+        // THEN
+        assert_eq!(app.input_buffer, expected);
+        assert_eq!(app.voice_state, VoiceState::Idle);
+    }
+
+    #[test]
+    fn final_transcript_is_inserted_at_unicode_cursor() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        app.input_mode = Mode::Editing;
+        app.input_buffer = "あう".to_string();
+        app.input_cursor = 1;
+        app.voice_state = VoiceState::Recognizing;
+        let expected = ("あ認識結果う".to_string(), 5);
+
+        // WHEN
+        app.handle_voice_event(VoiceEvent::Final(" 認識結果 ".to_string()));
+
+        // THEN
+        assert_eq!((app.input_buffer, app.input_cursor), expected);
+        assert_eq!(app.voice_state, VoiceState::Idle);
+    }
+
+    #[test]
+    fn empty_transcript_sets_failed_state() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        app.voice_state = VoiceState::Recognizing;
+        let expected = VoiceState::Failed("No speech was recognized".to_string());
+
+        // WHEN
+        app.handle_voice_event(VoiceEvent::Final("  ".to_string()));
+
+        // THEN
+        assert_eq!(app.voice_state, expected);
+    }
+
+    #[test]
+    fn escape_cancels_voice_input_without_leaving_editing_mode() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        app.input_mode = Mode::Editing;
+        app.voice_state = VoiceState::Recording;
+        let expected = Some(VoiceCommand::Cancel);
+
+        // WHEN
+        app.handle_key_event(KeyCode::Esc);
+
+        // THEN
+        assert_eq!(app.input_mode, Mode::Editing);
+        assert_eq!(app.voice_state, VoiceState::Idle);
+        assert_eq!(app.take_voice_command(), expected);
+    }
+
+    #[test]
+    fn enter_does_not_add_task_during_voice_input() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        app.input_mode = Mode::Editing;
+        app.input_buffer = "unfinished".to_string();
+        app.input_cursor = app.input_buffer.chars().count();
+        app.voice_state = VoiceState::Recording;
+        let expected = 0;
+
+        // WHEN
+        app.handle_key_event(KeyCode::Enter);
+
+        // THEN
+        assert_eq!(app.tasks.len(), expected);
+        assert_eq!(app.input_mode, Mode::Editing);
+    }
+
+    #[test]
+    fn permission_denial_sets_failed_state() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        app.voice_state = VoiceState::Authorizing;
+        let message = "Speech recognition permission was denied".to_string();
+        let expected = VoiceState::Failed(message.clone());
+
+        // WHEN
+        app.handle_voice_event(VoiceEvent::PermissionDenied(message));
+
+        // THEN
+        assert_eq!(app.voice_state, expected);
+    }
+
+    #[test]
+    fn recording_stops_after_thirty_seconds() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        let started_at = Instant::now();
+        app.voice_state = VoiceState::Recording;
+        app.voice_recording_started_at = Some(started_at);
+        let expected = Some(VoiceCommand::Stop);
+
+        // WHEN
+        app.tick(started_at + VOICE_RECORDING_LIMIT);
+
+        // THEN
+        assert_eq!(app.voice_state, VoiceState::Recognizing);
+        assert_eq!(app.take_voice_command(), expected);
+    }
+
+    #[test]
+    fn unavailable_on_device_recognition_sets_failed_state() {
+        // GIVEN
+        let mut app = create_app(Vec::new(), None);
+        app.voice_state = VoiceState::Authorizing;
+        let message = "On-device Japanese speech recognition is unavailable".to_string();
+        let expected = VoiceState::Failed(message.clone());
+
+        // WHEN
+        app.handle_voice_event(VoiceEvent::Unavailable(message));
+
+        // THEN
+        assert_eq!(app.voice_state, expected);
+    }
+
+    #[test]
     fn status_update_failure_keeps_task_visible_and_unchanged() {
         // GIVEN
         let tasks_dir = temporary_tasks_dir();
@@ -646,8 +1167,17 @@ mod tests {
             done_loaded: false,
             open_file: None,
             error_message: None,
+            voice_state: VoiceState::Idle,
+            voice_partial: String::new(),
             tasks_dir,
             persistent_error: None,
+            voice_enabled: false,
+            keyboard_release_supported: false,
+            voice_key_pressed_at: None,
+            voice_recording_started_at: None,
+            pending_voice_command: None,
+            voice_stop_requested: false,
+            voice_last_key_event_at: None,
         };
 
         // WHEN

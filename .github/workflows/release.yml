@@ -54,10 +54,31 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
+      - name: Create signed macOS app bundle
+        if: runner.os == 'macOS'
+        run: |
+          app_dir=target/${{ matrix.target }}/release/rem.app
+          mkdir -p "$app_dir/Contents/MacOS"
+          cp native/Info.plist "$app_dir/Contents/Info.plist"
+          mv \
+            target/${{ matrix.target }}/release/${{ matrix.artifact_name }} \
+            "$app_dir/Contents/MacOS/rem"
+          codesign --force --sign - "$app_dir"
+
+          cat > target/${{ matrix.target }}/release/${{ matrix.artifact_name }} <<'EOF'
+          #!/bin/sh
+          exec "$(dirname "$0")/rem.app/Contents/MacOS/rem" "$@"
+          EOF
+          chmod +x target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+
       - name: Create tarball
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czvf ../../../${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            tar -czvf ../../../${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }} rem.app
+          else
+            tar -czvf ../../../${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

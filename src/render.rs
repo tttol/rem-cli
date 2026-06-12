@@ -1,4 +1,4 @@
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, VoiceState};
 use crate::task::{DEADLINE_DATE_FORMAT, Task, TaskStatus};
 use chrono::{Local, NaiveDate};
 use ratatui::{
@@ -151,14 +151,45 @@ pub fn render(frame: &mut Frame, app: &App) {
         let cursor_width = Line::from(cursor_prefix.as_str()).width() as u16;
         let input_width = outer[1].width.saturating_sub(2).max(1);
         let horizontal_offset = cursor_width.saturating_sub(input_width.saturating_sub(1));
-        let input_title = app
-            .error_message
-            .as_deref()
-            .unwrap_or("New Task (Enter: confirm, Esc: cancel)");
-        let input_style = app
-            .error_message
-            .as_ref()
-            .map_or_else(Style::default, |_| Style::default().fg(Color::Red));
+        let (input_title, input_style) = match &app.voice_state {
+            VoiceState::Authorizing => (
+                "Checking voice permissions... (Esc: cancel)".to_string(),
+                Style::default().fg(Color::Yellow),
+            ),
+            VoiceState::Recording
+                if app.voice_partial.is_empty() && app.keyboard_release_supported =>
+            {
+                (
+                    "Recording... release v to stop (Esc: cancel)".to_string(),
+                    Style::default().fg(Color::Green),
+                )
+            }
+            VoiceState::Recording if app.voice_partial.is_empty() => (
+                "Recording... press v to stop (Esc: cancel)".to_string(),
+                Style::default().fg(Color::Green),
+            ),
+            VoiceState::Recording => (
+                format!("Recording: {}", app.voice_partial),
+                Style::default().fg(Color::Green),
+            ),
+            VoiceState::Recognizing => (
+                "Recognizing speech... (Esc: cancel)".to_string(),
+                Style::default().fg(Color::Yellow),
+            ),
+            VoiceState::Failed(message) => (
+                format!("Voice input failed: {message}"),
+                Style::default().fg(Color::Red),
+            ),
+            VoiceState::Idle => app.error_message.as_deref().map_or_else(
+                || {
+                    (
+                        "New Task (Enter: confirm, hold v: voice, Esc: cancel)".to_string(),
+                        Style::default(),
+                    )
+                },
+                |error| (error.to_string(), Style::default().fg(Color::Red)),
+            ),
+        };
         let input = Paragraph::new(app.input_buffer.as_str())
             .block(
                 Block::default()
@@ -205,16 +236,29 @@ mod tests {
             done_loaded,
             open_file: None,
             error_message: None,
+            voice_state: VoiceState::Idle,
+            voice_partial: String::new(),
             tasks_dir: Task::default_base_dir(),
             persistent_error: None,
+            voice_enabled: false,
+            keyboard_release_supported: false,
+            voice_key_pressed_at: None,
+            voice_recording_started_at: None,
+            pending_voice_command: None,
+            voice_stop_requested: false,
+            voice_last_key_event_at: None,
         }
     }
 
     fn rendered_text(done_loaded: bool) -> String {
+        let app = create_app(done_loaded);
+        rendered_app_text(&app)
+    }
+
+    fn rendered_app_text(app: &App) -> String {
         let backend = TestBackend::new(120, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        let app = create_app(done_loaded);
-        terminal.draw(|frame| render(frame, &app)).unwrap();
+        terminal.draw(|frame| render(frame, app)).unwrap();
         let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
             .map(|y| {
@@ -252,6 +296,22 @@ mod tests {
         // THEN
         assert!(expected_titles.iter().all(|title| actual.contains(title)));
         assert!(!actual.contains("Preview"));
+    }
+
+    #[test]
+    fn renders_partial_transcript_while_recording() {
+        // GIVEN
+        let mut app = create_app(false);
+        app.input_mode = Mode::Editing;
+        app.voice_state = VoiceState::Recording;
+        app.voice_partial = "音声入力中".to_string();
+        let expected = "Recording:";
+
+        // WHEN
+        let actual = rendered_app_text(&app);
+
+        // THEN
+        assert!(actual.contains(expected));
     }
 
     #[test]
