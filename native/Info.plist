@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>link.about-tttol.rem-cli</string>
+    <key>CFBundleExecutable</key>
+    <string>rem</string>
+    <key>CFBundleName</key>
+    <string>rem</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Task titles can be entered using your microphone.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Spoken task titles are converted to text on this Mac.</string>
+</dict>
+</plist>

@@ -27,6 +27,7 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 
 - **Four-column status management** - PARKING / TODO / DOING / DONE
 - **Keyboard-driven workflow** - Add, navigate, and update tasks without touching the mouse
+- **Voice title input on macOS** - Hold `v` while adding a task to dictate its title
 - **Lazy loading** - PARKING loads after the first frame and DONE loads on demand
 - **Neovim integration** - Press Enter to open and edit a task file in neovim
 
@@ -35,6 +36,7 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 | Key | Action |
 |-----|--------|
 | `a` | Add a new task |
+| Hold `v` | Record a task title with macOS speech recognition while adding a task |
 | `j` / `k` | Navigate down / up within a status |
 | `h` / `l` | Navigate left / right between statuses |
 | `n` | Move task to next status (PARKING -> TODO -> DOING -> DONE) |
@@ -50,6 +52,10 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 brew tap tttol/tap
 brew install tttol/tap/rem-cli
 ```
+
+Voice input requires macOS 14 or later. On first use, macOS asks for microphone and speech recognition permissions. Recognition is restricted to the on-device Japanese recognizer, and rem-cli does not send audio to an online recognition service.
+
+Terminals that support key release events stop recording when `v` is released. In other terminals, hold `v` until the recording indicator appears, release it, and press `v` once more to stop.
 
 ### Linux
 ```bash
@@ -71,6 +77,16 @@ sudo mv rem-cli /usr/local/bin/
 git clone https://github.com/tttol/rem-cli.git
 cd rem-cli
 cargo install --path .
+```
+
+`cargo run` automatically creates and signs a temporary `rem.app` bundle so macOS can display its privacy permission dialogs. For a manually built binary, create the same bundle structure before running it:
+
+```bash
+mkdir -p rem.app/Contents/MacOS
+cp native/Info.plist rem.app/Contents/Info.plist
+cp target/release/rem rem.app/Contents/MacOS/rem
+codesign --force --sign - rem.app
+rem.app/Contents/MacOS/rem
 ```
 
 ## 💾 Data Storage

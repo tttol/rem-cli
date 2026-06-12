@@ -1,0 +1,2 @@
+[target.'cfg(target_os = "macos")']
+runner = ["sh", "scripts/macos-cargo-runner.sh"]
