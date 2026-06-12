@@ -12,7 +12,56 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  update-version:
+    runs-on: ubuntu-latest
+    outputs:
+      commit_sha: ${{ steps.update.outputs.commit_sha }}
+      version: ${{ steps.update.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Update version
+        id: update
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: ${tag}" >&2
+            exit 1
+          fi
+
+          tag_commit="$(git rev-parse HEAD)"
+          main_commit="$(git rev-parse origin/main)"
+          if [[ "${tag_commit}" != "${main_commit}" ]]; then
+            echo "Release tag must point to the latest commit on main." >&2
+            exit 1
+          fi
+
+          version="${tag#v}"
+          sed -i.bak -E '/^\[package\]$/,/^\[/{s/^version = "[^"]+"$/version = "'"${version}"'"/;}' Cargo.toml
+          rm Cargo.toml.bak
+          cargo update -p rem-cli
+          cargo metadata --locked --no-deps --format-version 1 > /dev/null
+
+          if ! git diff --quiet -- Cargo.toml Cargo.lock; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Cargo.toml Cargo.lock
+            git commit -m "chore: bump version to ${version}"
+            git push origin HEAD:main
+          fi
+
+          echo "commit_sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
   build:
+    needs: update-version
     strategy:
       matrix:
         include:
@@ -36,7 +85,9 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.update-version.outputs.commit_sha }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -54,13 +105,23 @@ jobs:
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
+      - name: Verify version
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          actual_version="$(target/${{ matrix.target }}/release/${{ matrix.artifact_name }} --version)"
+          expected_version="rem ${{ needs.update-version.outputs.version }}"
+          if [ "${actual_version}" != "${expected_version}" ]; then
+            echo "Expected ${expected_version}, but got ${actual_version}." >&2
+            exit 1
+          fi
+
       - name: Create tarball
         run: |
           cd target/${{ matrix.target }}/release
           tar -czvf ../../../${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
           path: ${{ matrix.asset_name }}.tar.gz
@@ -70,15 +131,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: artifacts/**/*.tar.gz
           generate_release_notes: true
