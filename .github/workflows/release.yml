@@ -67,6 +67,10 @@ jobs:
             else
               release_commit=""
             fi
+          elif [[ "${GITHUB_RUN_ATTEMPT:-1}" -gt 1 \
+            && "${current_version}" == "${version}" ]] \
+            && git merge-base --is-ancestor "${tag_commit}" "${main_commit}"; then
+            release_commit="${tag_commit}"
           else
             main_parent="$(git rev-parse "${main_commit}^")"
             main_version="$(git show "${main_commit}:Cargo.toml" | sed -n '/^\[package\]$/,/^\[/{s/^version = "\([^"]*\)"$/\1/p;}')"
