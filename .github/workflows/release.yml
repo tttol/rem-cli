@@ -6,14 +6,20 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   update-version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       commit_sha: ${{ steps.update.outputs.commit_sha }}
       version: ${{ steps.update.outputs.version }}
@@ -30,34 +36,69 @@ jobs:
         id: update
         shell: bash
         run: |
+          set -euo pipefail
+
           tag="${GITHUB_REF_NAME}"
           if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Invalid release tag: ${tag}" >&2
             exit 1
           fi
 
-          tag_commit="$(git rev-parse HEAD)"
-          main_commit="$(git rev-parse origin/main)"
-          if [[ "${tag_commit}" != "${main_commit}" ]]; then
-            echo "Release tag must point to the latest commit on main." >&2
-            exit 1
+          version="${tag#v}"
+          git fetch --force origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/tags/${tag}:refs/tags/${tag}"
+
+          tag_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
+          main_commit="$(git rev-parse refs/remotes/origin/main)"
+          git checkout --detach "${tag_commit}"
+          current_version="$(sed -n '/^\[package\]$/,/^\[/{s/^version = "\([^"]*\)"$/\1/p;}' Cargo.toml)"
+
+          if [[ "${current_version}" == "${version}" ]]; then
+            release_commit="${tag_commit}"
+          elif [[ "${tag_commit}" == "${main_commit}" ]]; then
+            release_commit=""
+          else
+            main_parent="$(git rev-parse "${main_commit}^")"
+            main_version="$(git show "${main_commit}:Cargo.toml" | sed -n '/^\[package\]$/,/^\[/{s/^version = "\([^"]*\)"$/\1/p;}')"
+            main_subject="$(git show -s --format=%s "${main_commit}")"
+            unexpected_files="$(git diff --name-only "${tag_commit}" "${main_commit}" | grep -Ev '^(Cargo.toml|Cargo.lock)$' || true)"
+
+            if [[ "${main_parent}" == "${tag_commit}" \
+              && "${main_version}" == "${version}" \
+              && "${main_subject}" == "chore: bump version to ${version}" \
+              && -z "${unexpected_files}" ]]; then
+              release_commit="${main_commit}"
+            else
+              echo "Release tag must point to the latest commit on main." >&2
+              exit 1
+            fi
           fi
 
-          version="${tag#v}"
-          sed -i.bak -E '/^\[package\]$/,/^\[/{s/^version = "[^"]+"$/version = "'"${version}"'"/;}' Cargo.toml
-          rm Cargo.toml.bak
-          cargo update -p rem-cli
-          cargo metadata --locked --no-deps --format-version 1 > /dev/null
+          if [[ -z "${release_commit}" ]]; then
+            sed -i.bak -E '/^\[package\]$/,/^\[/{s/^version = "[^"]+"$/version = "'"${version}"'"/;}' Cargo.toml
+            rm Cargo.toml.bak
+            cargo update -p rem-cli
+            cargo metadata --locked --no-deps --format-version 1 > /dev/null
 
-          if ! git diff --quiet -- Cargo.toml Cargo.lock; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add Cargo.toml Cargo.lock
             git commit -m "chore: bump version to ${version}"
             git push origin HEAD:main
+            release_commit="$(git rev-parse HEAD)"
           fi
 
-          echo "commit_sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+          remote_tag_ref="$(git rev-parse "refs/tags/${tag}")"
+          remote_tag_commit="$(git rev-parse "${remote_tag_ref}^{commit}")"
+          if [[ "${remote_tag_commit}" != "${release_commit}" ]]; then
+            git update-ref "refs/tags/${tag}" "${release_commit}"
+            git push \
+              --force-with-lease="refs/tags/${tag}:${remote_tag_ref}" \
+              origin "refs/tags/${tag}"
+          fi
+
+          echo "commit_sha=${release_commit}" >> "${GITHUB_OUTPUT}"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
   build:
@@ -129,6 +170,8 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v6
