@@ -1,7 +1,10 @@
 use crossterm::event::KeyCode;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crate::task::{Task, TaskStatus};
+
+const DOUBLE_KEY_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(PartialEq)]
 pub enum Mode {
@@ -23,7 +26,7 @@ pub struct App {
     pub error_message: Option<String>,
     pub(crate) tasks_dir: PathBuf,
     pub(crate) persistent_error: Option<String>,
-    pub(crate) pending_g: bool,
+    pub(crate) pending_g_at: Option<Instant>,
 }
 
 impl Default for App {
@@ -67,7 +70,7 @@ impl App {
             error_message: error_message.clone(),
             tasks_dir,
             persistent_error: error_message,
-            pending_g: false,
+            pending_g_at: None,
         }
     }
 
@@ -103,15 +106,19 @@ impl App {
         match self.input_mode {
             Mode::Normal => {
                 if key_code == KeyCode::Char('g') {
-                    if self.pending_g {
+                    let now = Instant::now();
+                    let is_double_g = self.pending_g_at.is_some_and(|started_at| {
+                        now.saturating_duration_since(started_at) <= DOUBLE_KEY_TIMEOUT
+                    });
+                    if is_double_g {
                         self.select_first();
-                        self.pending_g = false;
+                        self.pending_g_at = None;
                     } else {
-                        self.pending_g = true;
+                        self.pending_g_at = Some(now);
                     }
                     return;
                 }
-                self.pending_g = false;
+                self.pending_g_at = None;
                 match key_code {
                     KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
                     KeyCode::Char('a') => {
@@ -483,7 +490,7 @@ mod tests {
             error_message: None,
             tasks_dir: Task::default_base_dir(),
             persistent_error: None,
-            pending_g: false,
+            pending_g_at: None,
         }
     }
 
@@ -666,6 +673,26 @@ mod tests {
     }
 
     #[test]
+    fn double_g_after_timeout_does_not_select_first_task() {
+        // GIVEN
+        let tasks = vec![
+            create_task("todo one", TaskStatus::Todo),
+            create_task("todo two", TaskStatus::Todo),
+            create_task("todo three", TaskStatus::Todo),
+        ];
+        let mut app = create_app(tasks, Some(2));
+        app.pending_g_at = Some(Instant::now() - DOUBLE_KEY_TIMEOUT - Duration::from_millis(1));
+        let expected = Some(2);
+
+        // WHEN
+        app.handle_key_event(KeyCode::Char('g'));
+
+        // THEN
+        assert_eq!(app.selected_index, expected);
+        assert!(app.pending_g_at.is_some());
+    }
+
+    #[test]
     fn key_after_single_g_performs_its_normal_action() {
         // GIVEN
         let tasks = vec![
@@ -757,7 +784,7 @@ mod tests {
             error_message: None,
             tasks_dir,
             persistent_error: None,
-            pending_g: false,
+            pending_g_at: None,
         };
 
         // WHEN

@@ -176,7 +176,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         let (message, style) = app.error_message.as_deref().map_or_else(
             || {
                 (
-                    " a: add | j/k: up/down | h/l: left/right | n/N: status | d: toggle done | q: quit ",
+                    " a: add | j/k: up/down | G/gg: bottom/top | h/l: left/right | n/N: status | d: toggle done | q: quit ",
                     Style::default(),
                 )
             },
@@ -207,7 +207,7 @@ mod tests {
             error_message: None,
             tasks_dir: Task::default_base_dir(),
             persistent_error: None,
-            pending_g: false,
+            pending_g_at: None,
         }
     }
 
@@ -253,6 +253,18 @@ mod tests {
         // THEN
         assert!(expected_titles.iter().all(|title| actual.contains(title)));
         assert!(!actual.contains("Preview"));
+    }
+
+    #[test]
+    fn renders_navigation_help() {
+        // GIVEN
+        let expected = "G/gg: bottom/top";
+
+        // WHEN
+        let actual = rendered_text(false);
+
+        // THEN
+        assert!(actual.contains(expected));
     }
 
     #[test]
