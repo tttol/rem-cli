@@ -36,6 +36,7 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 |-----|--------|
 | `a` | Add a new task |
 | `j` / `k` | Navigate down / up within a status |
+| `G` / `gg` | Navigate to the bottom / top within a status |
 | `h` / `l` | Navigate left / right between statuses |
 | `n` | Move task to next status (PARKING -> TODO -> DOING -> DONE) |
 | `N` | Move task to previous status (DONE -> DOING -> TODO -> PARKING) |
