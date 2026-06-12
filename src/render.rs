@@ -207,6 +207,7 @@ mod tests {
             error_message: None,
             tasks_dir: Task::default_base_dir(),
             persistent_error: None,
+            pending_g: false,
         }
     }
 
