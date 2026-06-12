@@ -72,16 +72,24 @@ jobs:
             && git merge-base --is-ancestor "${tag_commit}" "${main_commit}"; then
             release_commit="${tag_commit}"
           else
-            main_parent="$(git rev-parse "${main_commit}^")"
-            main_version="$(git show "${main_commit}:Cargo.toml" | sed -n '/^\[package\]$/,/^\[/{s/^version = "\([^"]*\)"$/\1/p;}')"
-            main_subject="$(git show -s --format=%s "${main_commit}")"
-            unexpected_files="$(git diff --name-only "${tag_commit}" "${main_commit}" | grep -Ev '^(Cargo.toml|Cargo.lock)$' || true)"
+            if ! git merge-base --is-ancestor "${tag_commit}" "${main_commit}"; then
+              echo "Release tag must point to a commit on main." >&2
+              exit 1
+            fi
 
-            if [[ "${main_parent}" == "${tag_commit}" \
-              && "${main_version}" == "${version}" \
-              && "${main_subject}" == "chore: bump version to ${version}" \
+            version_commit="$(
+              git rev-list --reverse --ancestry-path "${tag_commit}..${main_commit}" | sed -n '1p'
+            )"
+            version_parent="$(git rev-parse "${version_commit}^")"
+            committed_version="$(git show "${version_commit}:Cargo.toml" | sed -n '/^\[package\]$/,/^\[/{s/^version = "\([^"]*\)"$/\1/p;}')"
+            version_subject="$(git show -s --format=%s "${version_commit}")"
+            unexpected_files="$(git diff --name-only "${tag_commit}" "${version_commit}" | grep -Ev '^(Cargo.toml|Cargo.lock)$' || true)"
+
+            if [[ "${version_parent}" == "${tag_commit}" \
+              && "${committed_version}" == "${version}" \
+              && "${version_subject}" == "chore: bump version to ${version}" \
               && -z "${unexpected_files}" ]]; then
-              release_commit="${main_commit}"
+              release_commit="${version_commit}"
             else
               echo "Release tag must point to the latest commit on main." >&2
               exit 1
