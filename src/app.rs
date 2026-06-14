@@ -1,3 +1,4 @@
+use chrono::{Days, Local, NaiveDate};
 use crossterm::event::KeyCode;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -22,6 +23,7 @@ pub struct App {
     pub selected_index: Option<usize>,
     pub parking_loaded: bool,
     pub done_loaded: bool,
+    pub done_week_start: NaiveDate,
     pub open_file: Option<PathBuf>,
     pub error_message: Option<String>,
     pub(crate) tasks_dir: PathBuf,
@@ -46,6 +48,7 @@ impl App {
 
     /// Creates an `App` using the provided task storage directory.
     pub fn with_tasks_dir(tasks_dir: PathBuf) -> Self {
+        let done_week_start = Task::week_start(Local::now().date_naive());
         let todo_result = Task::load_todo_from(&tasks_dir);
         let doing_result = Task::load_doing_from(&tasks_dir);
         let error_message = todo_result
@@ -66,6 +69,7 @@ impl App {
             selected_index,
             parking_loaded: false,
             done_loaded: false,
+            done_week_start,
             open_file: None,
             error_message: error_message.clone(),
             tasks_dir,
@@ -134,6 +138,8 @@ impl App {
                     KeyCode::Char('n') => self.forward_status(),
                     KeyCode::Char('N') => self.backward_status(),
                     KeyCode::Char('d') => self.toggle_done(),
+                    KeyCode::Char('[') => self.show_previous_done_week(),
+                    KeyCode::Char(']') => self.show_next_done_week(),
                     KeyCode::Enter => self.open_task(),
                     _ => {}
                 }
@@ -433,24 +439,17 @@ impl App {
             });
             self.tasks.retain(|t| t.status != TaskStatus::Done);
             self.done_loaded = false;
+            self.done_week_start = Task::week_start(Local::now().date_naive());
             if selection.is_some_and(|(status, _)| status == TaskStatus::Done) {
                 self.selected_index =
                     selection.and_then(|(_, row)| self.nearby_selection(TaskStatus::Doing, row));
             }
         } else {
-            let done_tasks = match Task::load_done_from(&self.tasks_dir) {
-                Ok(tasks) => tasks,
-                Err(error) => {
-                    self.error_message = Some(
-                        self.error_with_persistent(format!("Failed to load DONE tasks: {error}")),
-                    );
-                    return;
-                }
-            };
-            self.tasks.extend(done_tasks);
-            self.tasks = Task::sort(self.tasks.clone());
+            self.done_week_start = Task::week_start(Local::now().date_naive());
+            if !self.load_done_week() {
+                return;
+            }
             self.done_loaded = true;
-            self.error_message = self.persistent_error.clone();
         }
         if self.tasks.is_empty() {
             self.selected_index = None;
@@ -459,6 +458,80 @@ impl App {
         {
             self.selected_index = Some(self.tasks.len() - 1);
         }
+    }
+
+    fn show_previous_done_week(&mut self) {
+        if !self.done_loaded {
+            return;
+        }
+        let previous_week_start = self
+            .done_week_start
+            .checked_sub_days(Days::new(7))
+            .expect("previous week should be a valid date");
+        let current_week_start = self.done_week_start;
+        self.done_week_start = previous_week_start;
+        if !self.load_done_week() {
+            self.done_week_start = current_week_start;
+            return;
+        }
+        self.select_done_column();
+    }
+
+    fn show_next_done_week(&mut self) {
+        if !self.done_loaded {
+            return;
+        }
+        let current_week_start = Task::week_start(Local::now().date_naive());
+        let next_week_start = self
+            .done_week_start
+            .checked_add_days(Days::new(7))
+            .expect("next week should be a valid date");
+        if next_week_start > current_week_start {
+            return;
+        }
+        let current_done_week_start = self.done_week_start;
+        self.done_week_start = next_week_start;
+        if !self.load_done_week() {
+            self.done_week_start = current_done_week_start;
+            return;
+        }
+        self.select_done_column();
+    }
+
+    fn load_done_week(&mut self) -> bool {
+        let selected_id = self
+            .selected_index
+            .and_then(|index| self.tasks.get(index))
+            .map(|task| task.id);
+        let done_tasks = match Task::load_done_for_week_from(&self.tasks_dir, self.done_week_start)
+        {
+            Ok(tasks) => tasks,
+            Err(error) => {
+                self.error_message =
+                    Some(self.error_with_persistent(format!("Failed to load DONE tasks: {error}")));
+                return false;
+            }
+        };
+        self.tasks.retain(|task| task.status != TaskStatus::Done);
+        self.tasks.extend(done_tasks);
+        self.tasks = Task::sort(self.tasks.clone());
+        self.selected_index = selected_id
+            .and_then(|id| self.tasks.iter().position(|task| task.id == id))
+            .or_else(|| {
+                self.tasks
+                    .iter()
+                    .position(|task| task.status == TaskStatus::Done)
+            })
+            .or_else(|| (!self.tasks.is_empty()).then_some(0));
+        self.error_message = self.persistent_error.clone();
+        true
+    }
+
+    fn select_done_column(&mut self) {
+        self.selected_index = self
+            .tasks
+            .iter()
+            .position(|task| task.status == TaskStatus::Done);
     }
 
     fn error_with_persistent(&self, error: String) -> String {
@@ -486,6 +559,7 @@ mod tests {
             selected_index,
             parking_loaded: true,
             done_loaded: false,
+            done_week_start: Task::week_start(Local::now().date_naive()),
             open_file: None,
             error_message: None,
             tasks_dir: Task::default_base_dir(),
@@ -731,6 +805,116 @@ mod tests {
     }
 
     #[test]
+    fn opening_done_shows_only_current_week_tasks() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let current_week_start = Task::week_start(Local::now().date_naive());
+        let completed_dates = [
+            ("current done", current_week_start),
+            (
+                "previous done",
+                current_week_start.checked_sub_days(Days::new(1)).unwrap(),
+            ),
+        ];
+        completed_dates
+            .into_iter()
+            .map(|(name, date)| {
+                let mut task = Task::new_in(name.to_string(), tasks_dir.clone());
+                task.status = TaskStatus::Done;
+                task.completed_at = date.and_hms_opt(12, 0, 0);
+                task
+            })
+            .try_for_each(|task| task.save())
+            .unwrap();
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
+        let expected = ["current done"];
+
+        // WHEN
+        app.handle_key_event(KeyCode::Char('d'));
+
+        // THEN
+        let actual = app
+            .tasks
+            .iter()
+            .filter(|task| task.status == TaskStatus::Done)
+            .map(|task| task.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert_eq!(app.done_week_start, current_week_start);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn left_bracket_shows_previous_done_week() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let current_week_start = Task::week_start(Local::now().date_naive());
+        let previous_week_start = current_week_start.checked_sub_days(Days::new(7)).unwrap();
+        let mut task = Task::new_in("previous done".to_string(), tasks_dir.clone());
+        task.status = TaskStatus::Done;
+        task.completed_at = previous_week_start.and_hms_opt(12, 0, 0);
+        task.save().unwrap();
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
+        app.handle_key_event(KeyCode::Char('d'));
+
+        // WHEN
+        app.handle_key_event(KeyCode::Char('['));
+
+        // THEN
+        let actual = app
+            .tasks
+            .iter()
+            .find(|task| task.status == TaskStatus::Done)
+            .map(|task| task.name.as_str());
+        assert_eq!(actual, Some("previous done"));
+        assert_eq!(app.done_week_start, previous_week_start);
+        assert_eq!(
+            app.selected_index.map(|index| app.tasks[index].status),
+            Some(TaskStatus::Done)
+        );
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn changing_to_empty_done_week_clears_task_selection() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let mut todo = Task::new_in("visible todo".to_string(), tasks_dir.clone());
+        todo.save().unwrap();
+        todo.status = TaskStatus::Parking;
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
+        app.handle_key_event(KeyCode::Char('d'));
+
+        // WHEN
+        app.handle_key_event(KeyCode::Char('['));
+
+        // THEN
+        assert_eq!(app.selected_index, None);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn right_bracket_does_not_move_beyond_current_week() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        fs::create_dir_all(&tasks_dir).unwrap();
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
+        app.handle_key_event(KeyCode::Char('d'));
+        let expected = app.done_week_start;
+
+        // WHEN
+        app.handle_key_event(KeyCode::Char(']'));
+
+        // THEN
+        assert_eq!(app.done_week_start, expected);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
     fn editing_cursor_moves_and_inserts_at_selected_position() {
         // GIVEN
         let mut app = create_app(Vec::new(), None);
@@ -780,6 +964,7 @@ mod tests {
             selected_index: Some(0),
             parking_loaded: true,
             done_loaded: false,
+            done_week_start: Task::week_start(Local::now().date_naive()),
             open_file: None,
             error_message: None,
             tasks_dir,
