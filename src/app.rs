@@ -366,11 +366,22 @@ impl App {
             return;
         }
         self.error_message = self.persistent_error.clone();
-        if next_status == TaskStatus::Done && !self.done_loaded {
-            self.tasks.retain(|task| task.id != id);
-            self.tasks = Task::sort(self.tasks.clone());
-            self.selected_index = self.nearby_selection(previous_status, previous_row);
-            return;
+        if next_status == TaskStatus::Done {
+            let done_week_end = self
+                .done_week_start
+                .checked_add_days(Days::new(7))
+                .expect("done week end should be a valid date");
+            let belongs_to_visible_done_week = self.done_loaded
+                && self.tasks[index].completed_at.is_some_and(|completed_at| {
+                    let completed_date = completed_at.date();
+                    completed_date >= self.done_week_start && completed_date < done_week_end
+                });
+            if !belongs_to_visible_done_week {
+                self.tasks.retain(|task| task.id != id);
+                self.tasks = Task::sort(self.tasks.clone());
+                self.selected_index = self.nearby_selection(previous_status, previous_row);
+                return;
+            }
         }
         self.tasks = Task::sort(self.tasks.clone());
         self.selected_index = self.tasks.iter().position(|task| task.id == id);
@@ -910,6 +921,45 @@ mod tests {
 
         // THEN
         assert_eq!(app.done_week_start, expected);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn completing_task_during_past_week_review_keeps_it_out_of_done_column() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let mut target = Task::new_in("current completion".to_string(), tasks_dir.clone());
+        target.save().unwrap();
+        target.update_status(TaskStatus::Doing).unwrap();
+        let neighbor = Task::new_in("visible neighbor".to_string(), tasks_dir.clone());
+        neighbor.save().unwrap();
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
+        app.done_loaded = true;
+        app.done_week_start = Task::week_start(Local::now().date_naive())
+            .checked_sub_days(Days::new(7))
+            .unwrap();
+        app.selected_index = app
+            .tasks
+            .iter()
+            .position(|task| task.name == "current completion");
+
+        // WHEN
+        app.handle_key_event(KeyCode::Char('n'));
+
+        // THEN
+        assert!(
+            app.tasks
+                .iter()
+                .all(|task| task.name != "current completion")
+        );
+        let selected_name = app
+            .selected_index
+            .and_then(|index| app.tasks.get(index))
+            .map(|task| task.name.as_str());
+        assert_eq!(selected_name, Some("visible neighbor"));
+        let done_path = tasks_dir.join("done").join(format!("{}.md", target.id));
+        assert!(done_path.exists());
 
         fs::remove_dir_all(tasks_dir).unwrap();
     }
