@@ -39,7 +39,8 @@ Tasks are stored as markdown files under `~/.rem-cli/tasks/` with directory-base
 ```
 
 - Status is determined by which directory the file resides in (not by frontmatter)
-- Frontmatter contains: `id`, `name`, `created_at`, `updated_at`, `deadline` in `yyyy/MM/dd` format (no `status` field)
+- Frontmatter contains: `id`, `name`, `created_at`, `updated_at`, optional `completed_at`, and `deadline` in `yyyy/MM/dd` format (no `status` field)
+- Task timestamps use local `NaiveDateTime` values without timezone information
 - Status changes move the file between directories via `fs::rename`
 
 ## Key Patterns
@@ -50,7 +51,8 @@ Tasks are stored as markdown files under `~/.rem-cli/tasks/` with directory-base
 - Clean terminal restoration on exit (disable raw mode, leave alternate screen)
 - Two input modes: `Normal` (navigation/actions) and `Editing` (text input for new tasks)
 - PARKING tasks are loaded after the first frame is rendered
-- DONE tasks are lazy-loaded on demand (`d` key toggles) to keep startup fast
+- DONE tasks are lazy-loaded on demand (`d` key toggles) and filtered by completion week
+- DONE review weeks run from Monday through Sunday; `[` / `]` navigate weeks
 - Status columns are displayed horizontally as PARKING / TODO / DOING / DONE
 - DONE is hidden by default and toggled with the `d` key
 - `j` / `k` move within a status column, while `h` / `l` move between non-empty columns

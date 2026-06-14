@@ -1,6 +1,6 @@
 use crate::app::{App, Mode};
-use crate::task::{DEADLINE_DATE_FORMAT, Task, TaskStatus};
-use chrono::{Local, NaiveDate};
+use crate::task::{DEADLINE_DATE_FORMAT, TASK_DATETIME_FORMAT, Task, TaskStatus};
+use chrono::{Days, Local, NaiveDate};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
@@ -53,12 +53,23 @@ fn task_text(task: &Task, width: usize, today: NaiveDate, is_selected: bool) -> 
         format!("Deadline: {}", task.deadline.format(DEADLINE_DATE_FORMAT)),
         Style::default().fg(deadline_color),
     );
+    let completed = task.completed_at.map(|completed_at| {
+        Line::styled(
+            format!("Completed: {}", completed_at.format(TASK_DATETIME_FORMAT)),
+            Style::default().fg(if is_selected {
+                Color::Gray
+            } else {
+                Color::DarkGray
+            }),
+        )
+    });
     Text::from(
         wrap_task_name(task.name.as_str(), width)
             .lines
             .into_iter()
             .map(|line| line.patch_style(name_style))
             .chain([deadline])
+            .chain(completed)
             .collect::<Vec<_>>(),
     )
 }
@@ -85,17 +96,28 @@ pub fn render(frame: &mut Frame, app: &App) {
     };
 
     let statuses = if app.done_loaded {
+        let done_week_end = app
+            .done_week_start
+            .checked_add_days(Days::new(6))
+            .expect("done week end should be a valid date");
         vec![
-            (TaskStatus::Parking, " PARKING "),
-            (TaskStatus::Todo, " TODO "),
-            (TaskStatus::Doing, " DOING "),
-            (TaskStatus::Done, " DONE "),
+            (TaskStatus::Parking, " PARKING ".to_string()),
+            (TaskStatus::Todo, " TODO ".to_string()),
+            (TaskStatus::Doing, " DOING ".to_string()),
+            (
+                TaskStatus::Done,
+                format!(
+                    " DONE {}-{} ",
+                    app.done_week_start.format(DEADLINE_DATE_FORMAT),
+                    done_week_end.format(DEADLINE_DATE_FORMAT)
+                ),
+            ),
         ]
     } else {
         vec![
-            (TaskStatus::Parking, " PARKING "),
-            (TaskStatus::Todo, " TODO "),
-            (TaskStatus::Doing, " DOING "),
+            (TaskStatus::Parking, " PARKING ".to_string()),
+            (TaskStatus::Todo, " TODO ".to_string()),
+            (TaskStatus::Doing, " DOING ".to_string()),
         ]
     };
     let constraints = vec![Constraint::Ratio(1, statuses.len() as u32); statuses.len()];
@@ -123,7 +145,9 @@ pub fn render(frame: &mut Frame, app: &App) {
                 ))
             })
             .collect();
-        let border_style = if selected_in_group.is_some() {
+        let is_empty_done_selected =
+            *status == TaskStatus::Done && app.done_loaded && app.selected_index.is_none();
+        let border_style = if selected_in_group.is_some() || is_empty_done_selected {
             Style::default().fg(Color::Green)
         } else {
             Style::default()
@@ -131,7 +155,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         let list = List::new(items)
             .block(
                 Block::default()
-                    .title(*title)
+                    .title(title.as_str())
                     .title_style(status_title_style(*status))
                     .borders(Borders::ALL)
                     .border_style(border_style),
@@ -176,7 +200,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         let (message, style) = app.error_message.as_deref().map_or_else(
             || {
                 (
-                    " a: add | j/k: up/down | G/gg: bottom/top | h/l: left/right | n/N: status | d: toggle done | q: quit ",
+                    " a: add | j/k: up/down | G/gg: bottom/top | h/l: left/right | n/N: status | d: done | [/]: done week | q: quit ",
                     Style::default(),
                 )
             },
@@ -203,6 +227,7 @@ mod tests {
             selected_index: None,
             parking_loaded: false,
             done_loaded,
+            done_week_start: Task::week_start(Local::now().date_naive()),
             open_file: None,
             error_message: None,
             tasks_dir: Task::default_base_dir(),
@@ -253,6 +278,51 @@ mod tests {
         // THEN
         assert!(expected_titles.iter().all(|title| actual.contains(title)));
         assert!(!actual.contains("Preview"));
+    }
+
+    #[test]
+    fn renders_done_week_period() {
+        // GIVEN
+        let mut app = create_app(true);
+        app.done_week_start = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let backend = TestBackend::new(160, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let expected = "DONE 2026/06/15-2026/06/21";
+
+        // WHEN
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        // THEN
+        let buffer = terminal.backend().buffer();
+        let actual = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .filter_map(|x| buffer.cell((x, y)))
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(actual.contains(expected));
+    }
+
+    #[test]
+    fn renders_empty_done_column_as_selected_after_week_change() {
+        // GIVEN
+        let mut app = create_app(true);
+        app.selected_index = None;
+        let backend = TestBackend::new(160, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // WHEN
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        // THEN
+        let buffer = terminal.backend().buffer();
+        let done_border = buffer
+            .cell((buffer.area.width - 1, 1))
+            .expect("DONE border should exist");
+        assert_eq!(done_border.fg, Color::Green);
     }
 
     #[test]
@@ -345,6 +415,26 @@ mod tests {
 
         // THEN
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn task_text_displays_completed_datetime() {
+        // GIVEN
+        let mut task = Task::new("completed task".to_string());
+        let completed_at = NaiveDate::from_ymd_opt(2026, 6, 15)
+            .unwrap()
+            .and_hms_opt(10, 30, 45)
+            .unwrap();
+        task.status = TaskStatus::Done;
+        task.completed_at = Some(completed_at);
+        let today = task.deadline;
+        let expected = format!("Completed: {}", completed_at.format(TASK_DATETIME_FORMAT));
+
+        // WHEN
+        let actual = task_text(&task, 30, today, false);
+
+        // THEN
+        assert_eq!(actual.lines.last().unwrap().to_string(), expected);
     }
 
     #[test]

@@ -237,6 +237,8 @@ fn moving_task_to_hidden_done_selects_nearby_visible_task() {
 
     // THEN
     assert!(done_path.exists());
+    let done_content = fs::read_to_string(&done_path).unwrap();
+    assert!(done_content.contains("completed_at:"));
     assert!(
         app.tasks
             .iter()

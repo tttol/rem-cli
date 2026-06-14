@@ -1,4 +1,4 @@
-use chrono::{DateTime, Days, Local, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Days, Local, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub const DEADLINE_DATE_FORMAT: &str = "%Y/%m/%d";
+pub const TASK_DATETIME_FORMAT: &str = "%Y/%m/%d %H:%M:%S";
 const LEGACY_DEADLINE_DATE_FORMAT: &str = "%Y-%m-%d";
 
 /// Represents the lifecycle status of a task.
@@ -36,8 +37,22 @@ impl TaskStatus {
 struct TaskFrontmatter {
     id: Uuid,
     name: String,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    created_at: NaiveDateTime,
+    updated_at: NaiveDateTime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_at: Option<NaiveDateTime>,
+    #[serde(default)]
+    deadline: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct StoredTaskFrontmatter {
+    id: Uuid,
+    name: String,
+    created_at: String,
+    updated_at: String,
+    #[serde(default)]
+    completed_at: Option<String>,
     #[serde(default)]
     deadline: Option<String>,
 }
@@ -48,8 +63,9 @@ pub struct Task {
     pub id: Uuid,
     pub name: String,
     pub status: TaskStatus,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+    pub completed_at: Option<NaiveDateTime>,
     pub deadline: NaiveDate,
     base_dir: PathBuf,
 }
@@ -71,6 +87,20 @@ impl Task {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
+    fn parse_datetime(value: &str) -> io::Result<(NaiveDateTime, bool)> {
+        if let Ok(datetime) = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f") {
+            return Ok((datetime, false));
+        }
+        DateTime::parse_from_rfc3339(value)
+            .map(|datetime| (datetime.naive_local(), true))
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    pub fn week_start(date: NaiveDate) -> NaiveDate {
+        date.checked_sub_days(Days::new(date.weekday().num_days_from_monday().into()))
+            .expect("week start should be a valid date")
+    }
+
     /// Creates a new task with the given name and TODO status.
     pub fn new(name: String) -> Self {
         Self::new_in(name, Self::default_base_dir())
@@ -78,13 +108,14 @@ impl Task {
 
     /// Creates a new task under the provided task storage directory.
     pub fn new_in(name: String, base_dir: PathBuf) -> Self {
-        let now = Utc::now();
+        let now = Local::now().naive_local();
         Self {
             id: Uuid::new_v4(),
             name,
             status: TaskStatus::Todo,
             created_at: now,
             updated_at: now,
+            completed_at: None,
             deadline: Self::tomorrow_deadline(),
             base_dir,
         }
@@ -112,6 +143,7 @@ impl Task {
             name: self.name.clone(),
             created_at: self.created_at,
             updated_at: self.updated_at,
+            completed_at: self.completed_at,
             deadline: Some(self.deadline.format(DEADLINE_DATE_FORMAT).to_string()),
         }
     }
@@ -133,21 +165,39 @@ impl Task {
             .split("---")
             .next()
             .unwrap_or("");
-        let fm: TaskFrontmatter = serde_yaml::from_str(yaml)
+        let fm: StoredTaskFrontmatter = serde_yaml::from_str(yaml)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let (created_at, created_at_needs_migration) = Self::parse_datetime(&fm.created_at)?;
+        let (updated_at, updated_at_needs_migration) = Self::parse_datetime(&fm.updated_at)?;
+        let parsed_completed_at = fm
+            .completed_at
+            .as_deref()
+            .map(Self::parse_datetime)
+            .transpose()?;
+        let completed_at_needs_migration = parsed_completed_at
+            .as_ref()
+            .is_some_and(|(_, needs_migration)| *needs_migration);
+        let completed_at = parsed_completed_at.map(|(datetime, _)| datetime);
         let parsed_deadline = fm
             .deadline
             .as_deref()
             .map(Self::parse_deadline)
             .transpose()?;
-        let (deadline, needs_migration) =
+        let (deadline, deadline_needs_migration) =
             parsed_deadline.unwrap_or_else(|| (Self::tomorrow_deadline(), true));
+        let completed_at = completed_at.or((status == TaskStatus::Done).then_some(updated_at));
+        let needs_migration = created_at_needs_migration
+            || updated_at_needs_migration
+            || completed_at_needs_migration
+            || deadline_needs_migration
+            || (status == TaskStatus::Done && fm.completed_at.is_none());
         let task = Self {
             id: fm.id,
             name: fm.name,
             status,
-            created_at: fm.created_at,
-            updated_at: fm.updated_at,
+            created_at,
+            updated_at,
+            completed_at,
             deadline,
             base_dir: path
                 .parent()
@@ -207,6 +257,26 @@ impl Task {
         Self::load_by_status(base_dir, &[TaskStatus::Done])
     }
 
+    pub fn load_done_for_week_from(
+        base_dir: &Path,
+        week_start: NaiveDate,
+    ) -> io::Result<Vec<Self>> {
+        let week_end = week_start
+            .checked_add_days(Days::new(7))
+            .expect("week end should be a valid date");
+        Self::load_done_from(base_dir).map(|tasks| {
+            tasks
+                .into_iter()
+                .filter(|task| {
+                    task.completed_at.is_some_and(|completed_at| {
+                        let completed_date = completed_at.date();
+                        completed_date >= week_start && completed_date < week_end
+                    })
+                })
+                .collect()
+        })
+    }
+
     /// Loads tasks from the directories corresponding to the given statuses, sorted by `created_at`.
     fn load_by_status(base_dir: &Path, statuses: &[TaskStatus]) -> io::Result<Vec<Self>> {
         let mut tasks = Vec::new();
@@ -227,7 +297,7 @@ impl Task {
                 }
             }
         }
-        tasks.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        tasks.sort_by_key(|task| task.created_at);
         Ok(tasks)
     }
 
@@ -235,9 +305,14 @@ impl Task {
     pub fn update_status(&mut self, new_status: TaskStatus) -> io::Result<()> {
         let old_path = self.file_path();
         let new_path = Self::status_dir(&self.base_dir, new_status).join(format!("{}.md", self.id));
-        let updated_at = Utc::now();
+        let updated_at = Local::now().naive_local();
+        let completed_at = match (self.status, new_status) {
+            (TaskStatus::Doing, TaskStatus::Done) => Some(updated_at),
+            (TaskStatus::Done, TaskStatus::Doing) => None,
+            _ => self.completed_at,
+        };
         let existing = fs::read_to_string(&old_path)?;
-        let content = self.content_with_updated_frontmatter(&existing, updated_at)?;
+        let content = self.content_with_updated_frontmatter(&existing, updated_at, completed_at)?;
         fs::create_dir_all(new_path.parent().unwrap())?;
         Self::replace_file_content(&old_path, &content, "md.update")?;
         if let Err(move_error) = fs::rename(&old_path, &new_path) {
@@ -254,6 +329,7 @@ impl Task {
         }
         self.status = new_status;
         self.updated_at = updated_at;
+        self.completed_at = completed_at;
         Ok(())
     }
 
@@ -261,10 +337,12 @@ impl Task {
     fn content_with_updated_frontmatter(
         &self,
         existing: &str,
-        updated_at: DateTime<Utc>,
+        updated_at: NaiveDateTime,
+        completed_at: Option<NaiveDateTime>,
     ) -> io::Result<String> {
         let frontmatter = TaskFrontmatter {
             updated_at,
+            completed_at,
             ..self.frontmatter()
         };
         self.content_with_frontmatter(existing, frontmatter)
@@ -311,10 +389,10 @@ impl Task {
         let mut todos = Self::filter_by_status(&tasks, TaskStatus::Todo);
         let mut doings = Self::filter_by_status(&tasks, TaskStatus::Doing);
         let mut dones = Self::filter_by_status(&tasks, TaskStatus::Done);
-        parking.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        todos.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        doings.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-        dones.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        parking.sort_by_key(|task| task.created_at);
+        todos.sort_by_key(|task| task.created_at);
+        doings.sort_by_key(|task| task.created_at);
+        dones.sort_by_key(|task| task.created_at);
         [parking, todos, doings, dones].concat()
     }
 
@@ -380,6 +458,43 @@ mod tests {
 
         // THEN
         assert_eq!(task.deadline, expected);
+    }
+
+    #[test]
+    fn new_task_uses_local_naive_datetime() {
+        // GIVEN
+        let before = Local::now().naive_local();
+
+        // WHEN
+        let task = Task::new("local datetime test".to_string());
+
+        // THEN
+        let after = Local::now().naive_local();
+        assert!(task.created_at >= before);
+        assert!(task.created_at <= after);
+        assert_eq!(task.updated_at, task.created_at);
+        assert_eq!(task.completed_at, None);
+    }
+
+    #[test]
+    fn week_start_returns_monday_across_calendar_boundaries() {
+        // GIVEN
+        let dates = [
+            NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 6, 21).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+        ];
+        let expected = [
+            NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 6, 15).unwrap(),
+            NaiveDate::from_ymd_opt(2025, 12, 29).unwrap(),
+        ];
+
+        // WHEN
+        let actual = dates.map(Task::week_start);
+
+        // THEN
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -532,6 +647,66 @@ mod tests {
     }
 
     #[test]
+    fn load_migrates_utc_timestamps_without_changing_clock_time() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let todo_dir = tasks_dir.join("todo");
+        fs::create_dir_all(&todo_dir).unwrap();
+        let id = Uuid::new_v4();
+        let path = todo_dir.join(format!("{id}.md"));
+        let content = format!(
+            "---\nid: {id}\nname: legacy utc\ncreated_at: 2026-06-15T10:00:00Z\nupdated_at: 2026-06-15T11:30:00+09:00\ndeadline: 2026/06/16\n---\n## Notes\n"
+        );
+        fs::write(&path, content).unwrap();
+        let expected_created_at = NaiveDate::from_ymd_opt(2026, 6, 15)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        let expected_updated_at = NaiveDate::from_ymd_opt(2026, 6, 15)
+            .unwrap()
+            .and_hms_opt(11, 30, 0)
+            .unwrap();
+
+        // WHEN
+        let task = Task::load(&path, TaskStatus::Todo).unwrap();
+
+        // THEN
+        let migrated_content = fs::read_to_string(&path).unwrap();
+        assert_eq!(task.created_at, expected_created_at);
+        assert_eq!(task.updated_at, expected_updated_at);
+        assert!(!migrated_content.contains('Z'));
+        assert!(!migrated_content.contains("+09:00"));
+        assert!(migrated_content.ends_with("## Notes\n"));
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn load_done_uses_updated_at_for_missing_completed_at() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let todo_dir = tasks_dir.join("todo");
+        let done_dir = tasks_dir.join("done");
+        let task = Task::new_in("legacy done".to_string(), tasks_dir.clone());
+        task.save().unwrap();
+        fs::create_dir_all(&done_dir).unwrap();
+        let done_path = done_dir.join(format!("{}.md", task.id));
+        fs::rename(task.file_path(), &done_path).unwrap();
+        let expected = task.updated_at;
+
+        // WHEN
+        let loaded = Task::load(&done_path, TaskStatus::Done).unwrap();
+
+        // THEN
+        let migrated_content = fs::read_to_string(&done_path).unwrap();
+        assert_eq!(loaded.completed_at, Some(expected));
+        assert!(migrated_content.contains("completed_at:"));
+        assert!(!todo_dir.join(format!("{}.md", task.id)).exists());
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
     fn failed_deadline_migration_preserves_original_content() {
         // GIVEN
         let tasks_dir = temporary_tasks_dir();
@@ -627,6 +802,97 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(task.status, expected_status);
         assert_eq!(task.updated_at, expected_updated_at);
+    }
+
+    #[test]
+    fn moving_doing_task_to_done_sets_completed_at() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let mut task = Task::new_in("complete task".to_string(), tasks_dir.clone());
+        task.save().unwrap();
+        task.update_status(TaskStatus::Doing).unwrap();
+
+        // WHEN
+        task.update_status(TaskStatus::Done).unwrap();
+
+        // THEN
+        assert_eq!(task.completed_at, Some(task.updated_at));
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn reopening_done_task_clears_completed_at() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let mut task = Task::new_in("reopen task".to_string(), tasks_dir.clone());
+        task.save().unwrap();
+        task.update_status(TaskStatus::Doing).unwrap();
+        task.update_status(TaskStatus::Done).unwrap();
+
+        // WHEN
+        task.update_status(TaskStatus::Doing).unwrap();
+
+        // THEN
+        assert_eq!(task.completed_at, None);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn completing_reopened_task_sets_new_completed_at() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let mut task = Task::new_in("complete again".to_string(), tasks_dir.clone());
+        task.save().unwrap();
+        task.update_status(TaskStatus::Doing).unwrap();
+        task.update_status(TaskStatus::Done).unwrap();
+        let first_completed_at = task.completed_at;
+        task.update_status(TaskStatus::Doing).unwrap();
+
+        // WHEN
+        task.update_status(TaskStatus::Done).unwrap();
+
+        // THEN
+        assert!(task.completed_at.is_some());
+        assert!(task.completed_at >= first_completed_at);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn load_done_for_week_includes_monday_through_sunday() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let week_start = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let completed_dates = [
+            ("monday", NaiveDate::from_ymd_opt(2026, 6, 15).unwrap()),
+            ("sunday", NaiveDate::from_ymd_opt(2026, 6, 21).unwrap()),
+            ("next monday", NaiveDate::from_ymd_opt(2026, 6, 22).unwrap()),
+        ];
+        completed_dates
+            .into_iter()
+            .map(|(name, date)| {
+                let mut task = Task::new_in(name.to_string(), tasks_dir.clone());
+                task.status = TaskStatus::Done;
+                task.completed_at = date.and_hms_opt(12, 0, 0);
+                task
+            })
+            .try_for_each(|task| task.save())
+            .unwrap();
+        let expected = ["monday", "sunday"];
+
+        // WHEN
+        let tasks = Task::load_done_for_week_from(&tasks_dir, week_start).unwrap();
+
+        // THEN
+        let actual = tasks
+            .iter()
+            .map(|task| task.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
     }
 
     #[test]

@@ -26,6 +26,7 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 ## 🚀 Features
 
 - **Four-column status management** - PARKING / TODO / DOING / DONE
+- **Weekly DONE reviews** - Review completed tasks in Monday-to-Sunday intervals
 - **Keyboard-driven workflow** - Add, navigate, and update tasks without touching the mouse
 - **Lazy loading** - PARKING loads after the first frame and DONE loads on demand
 - **Neovim integration** - Press Enter to open and edit a task file in neovim
@@ -40,7 +41,8 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 | `h` / `l` | Navigate left / right between statuses |
 | `n` | Move task to next status (PARKING -> TODO -> DOING -> DONE) |
 | `N` | Move task to previous status (DONE -> DOING -> TODO -> PARKING) |
-| `d` | Toggle DONE tasks visibility |
+| `d` | Toggle this week's DONE tasks |
+| `[` / `]` | Show the previous / next DONE week |
 | `Enter` | Open task file in neovim |
 | `q` / `Esc` | Quit |
 
@@ -90,7 +92,7 @@ Tasks are stored as markdown files under `~/.rem-cli/tasks/` with directories re
     <uuid>.md
 ```
 
-Each file contains YAML frontmatter with task metadata. You can freely edit, back up, or version control these files.
+Each file contains YAML frontmatter with task metadata. `created_at` and `updated_at` are stored as local date-times without timezone information. DONE tasks also contain `completed_at`, which is used for weekly reviews. You can freely edit, back up, or version control these files.
 
 ## 🌟 Community
 
