@@ -5,9 +5,10 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use rem_cli::app::App;
+use rem_cli::config;
 use rem_cli::render;
 use std::io;
-use std::process::Command;
+use std::process::{self, Command};
 
 /// Entry point for the rem TUI application.
 ///
@@ -20,11 +21,19 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
+    let tasks_dir = match config::tasks_dir() {
+        Ok(tasks_dir) => tasks_dir,
+        Err(error) => {
+            eprintln!("Failed to load config: {error}");
+            process::exit(1);
+        }
+    };
+
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    let mut app = App::new();
+    let mut app = App::with_tasks_dir(tasks_dir);
 
     // Polling events
     while !app.should_quit {
