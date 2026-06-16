@@ -94,6 +94,25 @@ Tasks are stored as markdown files under `~/.rem-cli/tasks/` with directories re
 
 Each file contains YAML frontmatter with task metadata. `created_at` and `updated_at` are stored as local date-times without timezone information. DONE tasks also contain `completed_at`, which is used for weekly reviews. You can freely edit, back up, or version control these files.
 
+### Configuring the task directory
+
+Create `~/.rem-cli/config.yaml` to store tasks outside the default directory:
+
+```yaml
+tasks_dir: "/path/to/rem-cli/tasks"
+```
+
+If the config file does not exist, `rem` uses `~/.rem-cli/tasks/`. If the config file exists but is invalid or does not define `tasks_dir`, `rem` prints an error before entering the TUI.
+
+### iPhone management with Scriptable
+
+The `mobile/` directory contains Scriptable scripts for managing the same task files from iPhone:
+
+- `mobile/install-scriptable.js`: bootstrap installer to paste into Scriptable once.
+- `mobile/rem-board.js`: four-column board UI for PARKING / TODO / DOING / DONE.
+
+In Scriptable, create a file bookmark named `rem-cli-tasks` that points to the synced task directory, such as an iCloud Drive folder. Run the installer to download the latest `rem-board.js` into Scriptable's iCloud documents directory.
+
 ## 🌟 Community
 
 - **[Report issues](https://github.com/tttol/rem-cli/issues)** - Found a bug? Let us know
