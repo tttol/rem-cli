@@ -447,5 +447,16 @@ render(state);
 </script>
 </body>
 </html>`;
-  await main();
+  globalThis.remBoardTestApi = {
+    addDays,
+    buildTaskContent,
+    formatDate,
+    formatDateTime,
+    parseTaskContent,
+    parseYamlScalar,
+    renderHtml,
+  };
+  if (typeof process === "undefined" || !process.versions?.node) {
+    await main();
+  }
 }
