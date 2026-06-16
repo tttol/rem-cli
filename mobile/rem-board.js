@@ -1,4 +1,5 @@
 {
+  // Starts the Scriptable app, validates the file bookmark, renders the board, and listens for UI actions.
   const main = async () => {
     const bookmarkName = "rem-cli-tasks";
     const statuses = ["parking", "todo", "doing", "done"];
@@ -20,6 +21,7 @@
     webView.present(true);
     await runActionLoop(webView, fileManager, tasksRoot, statuses, statusLabels);
   };
+  // Shows setup guidance when the required Scriptable file bookmark is missing.
   const showMissingBookmark = async (bookmarkName) => {
     const alert = new Alert();
     alert.title = "File bookmark required";
@@ -27,12 +29,14 @@
     alert.addAction("OK");
     await alert.present();
   };
+  // Creates the rem status directories when they do not already exist.
   const ensureStatusDirectories = async (fileManager, tasksRoot, statuses) => {
     statuses
       .map((status) => fileManager.joinPath(tasksRoot, status))
       .filter((path) => !fileManager.fileExists(path))
       .forEach((path) => fileManager.createDirectory(path, true));
   };
+  // Loads every markdown task from each status directory into board state.
   const loadState = async (fileManager, tasksRoot, statuses, statusLabels) => {
     const tasksByStatus = {};
     for (const status of statuses) {
@@ -47,6 +51,7 @@
     }
     return { tasksByStatus, statusLabels, statuses };
   };
+  // Reads one task file and converts its frontmatter into a UI task object.
   const loadTask = async (fileManager, directory, fileName, status) => {
     const path = fileManager.joinPath(directory, fileName);
     await fileManager.downloadFileFromiCloud(path);
@@ -64,6 +69,7 @@
       fileName,
     };
   };
+  // Splits a rem markdown file into frontmatter fields and markdown body.
   const parseTaskContent = (content) => {
     const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
     const yaml = match ? match[1] : "";
@@ -77,6 +83,7 @@
     );
     return { frontmatter, body };
   };
+  // Parses the simple YAML scalar formats written by rem and this Scriptable script.
   const parseYamlScalar = (value) => {
     if (value === "") {
       return "";
@@ -89,6 +96,7 @@
     }
     return value;
   };
+  // Waits for actions from the WebView, applies them to files, and refreshes the board state.
   const runActionLoop = async (webView, fileManager, tasksRoot, statuses, statusLabels) => {
     let isRunning = true;
     while (isRunning) {
@@ -102,6 +110,7 @@
       }
     }
   };
+  // Bridges the WebView action queue back to Scriptable through completion().
   const waitForAction = (webView) =>
     webView.evaluateJavaScript(
       `(() => {
@@ -115,6 +124,7 @@
       })();`,
       true
     );
+  // Dispatches a WebView action to the corresponding file operation.
   const handleAction = async (action, fileManager, tasksRoot, statuses) => {
     if (action.type === "add") {
       await addTask(fileManager, tasksRoot, action.name || "");
@@ -126,6 +136,7 @@
       await moveTask(fileManager, tasksRoot, statuses, action);
     }
   };
+  // Creates a new TODO markdown file with rem-compatible frontmatter.
   const addTask = async (fileManager, tasksRoot, rawName) => {
     const name = rawName.trim();
     if (!name) {
@@ -143,6 +154,7 @@
     const path = fileManager.joinPath(fileManager.joinPath(tasksRoot, "todo"), `${id}.md`);
     fileManager.writeString(path, buildTaskContent(task, ""));
   };
+  // Updates the task title while preserving the existing markdown body.
   const renameTask = async (fileManager, path, rawName) => {
     const name = rawName.trim();
     if (!name) {
@@ -157,6 +169,7 @@
     };
     fileManager.writeString(path, buildTaskContent(updated, parsed.body));
   };
+  // Moves a task between status directories and updates completion metadata when needed.
   const moveTask = async (fileManager, tasksRoot, statuses, action) => {
     const currentIndex = statuses.indexOf(action.status);
     const nextIndex = currentIndex + action.direction;
@@ -184,6 +197,7 @@
     fileManager.writeString(action.path, buildTaskContent(updated, parsed.body));
     fileManager.move(action.path, destination);
   };
+  // Builds a rem markdown document from frontmatter fields and the preserved body.
   const buildTaskContent = (frontmatter, body) => {
     const lines = [
       ["id", frontmatter.id],
@@ -197,13 +211,16 @@
       .map(([key, value]) => `${key}: ${JSON.stringify(String(value))}`);
     return `---\n${lines.join("\n")}\n---\n${body || ""}`;
   };
+  // Returns a new date shifted by the requested number of calendar days.
   const addDays = (date, days) => new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+  // Formats a date as rem's yyyy/MM/dd deadline value.
   const formatDate = (date) => {
     const year = String(date.getFullYear()).padStart(4, "0");
     const month = String(date.getMonth() + 1).padStart(2, "0");
     const day = String(date.getDate()).padStart(2, "0");
     return `${year}/${month}/${day}`;
   };
+  // Formats a local timestamp in the format rem can parse as NaiveDateTime.
   const formatDateTime = (date) => {
     const year = String(date.getFullYear()).padStart(4, "0");
     const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -213,6 +230,7 @@
     const seconds = String(date.getSeconds()).padStart(2, "0");
     return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
   };
+  // Renders the complete HTML, CSS, and client-side JavaScript for the task board.
   const renderHtml = (state) => `<!doctype html>
 <html>
 <head>
@@ -365,6 +383,7 @@ input {
 </div>
 <script>
 const state = ${JSON.stringify(state)};
+// Sends a browser-side action to Scriptable, or queues it until Scriptable is listening.
 const sendAction = (action) => {
   if (window.remNativeCallback) {
     const callback = window.remNativeCallback;
@@ -374,15 +393,20 @@ const sendAction = (action) => {
     window.remPendingAction = action;
   }
 };
+// Handles the add form and sends a new task request to Scriptable.
 const addTask = (event) => {
   event.preventDefault();
   const input = document.getElementById("new-task");
   sendAction({ type: "add", name: input.value });
   input.value = "";
 };
+// Decodes a task payload embedded in an inline event handler.
 const decodeTask = (payload) => JSON.parse(decodeURIComponent(payload));
+// Sends a status move request to Scriptable.
 const moveTask = (payload, direction) => sendAction({ type: "move", ...decodeTask(payload), direction });
+// Sends a title update request to Scriptable.
 const renameTask = (payload, value) => sendAction({ type: "rename", path: decodeTask(payload).path, name: value });
+// Builds the HTML for a single task card.
 const taskTemplate = (task, status, index, statuses) => {
   const canMoveBack = index > 0;
   const canMoveForward = index < statuses.length - 1;
@@ -397,11 +421,13 @@ const taskTemplate = (task, status, index, statuses) => {
       </div>
     </article>\`;
 };
+// Escapes user-controlled text before inserting it into the DOM.
 const escapeHtml = (value) => String(value)
   .replace(/&/g, "&amp;")
   .replace(/</g, "&lt;")
   .replace(/>/g, "&gt;")
   .replace(/"/g, "&quot;");
+// Replaces the board contents with the latest Scriptable-provided state.
 const render = (nextState) => {
   const board = document.getElementById("board");
   board.innerHTML = nextState.statuses.map((status, index) => {
