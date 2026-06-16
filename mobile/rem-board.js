@@ -230,6 +230,12 @@
     const seconds = String(date.getSeconds()).padStart(2, "0");
     return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
   };
+  // Serializes state safely for an inline script element.
+  const serializeScriptState = (state) =>
+    JSON.stringify(state)
+      .replace(/</g, "\\u003C")
+      .replace(/\u2028/g, "\\u2028")
+      .replace(/\u2029/g, "\\u2029");
   // Renders the complete HTML, CSS, and client-side JavaScript for the task board.
   const renderHtml = (state) => `<!doctype html>
 <html>
@@ -382,7 +388,7 @@ input {
   <main id="board" class="board"></main>
 </div>
 <script>
-const state = ${JSON.stringify(state)};
+const state = ${serializeScriptState(state)};
 // Sends a browser-side action to Scriptable, or queues it until Scriptable is listening.
 const sendAction = (action) => {
   if (window.remNativeCallback) {
@@ -455,6 +461,7 @@ render(state);
     parseTaskContent,
     parseYamlScalar,
     renderHtml,
+    serializeScriptState,
   };
   if (typeof process === "undefined" || !process.versions?.node) {
     await main();

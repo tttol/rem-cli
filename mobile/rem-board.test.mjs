@@ -11,6 +11,7 @@ const {
   parseTaskContent,
   parseYamlScalar,
   renderHtml,
+  serializeScriptState,
 } = globalThis.remBoardTestApi;
 
 test("parseYamlScalar parses rem-compatible scalar values", () => {
@@ -142,4 +143,48 @@ test("renderHtml includes client-side escaping and encoded payload handling", ()
   assert.match(actual, /&amp;/);
   assert.match(actual, /&lt;/);
   assert.match(actual, /&quot;/);
+});
+
+test("renderHtml safely serializes task names inside inline script state", () => {
+  // GIVEN
+  const state = {
+    statuses: ["todo"],
+    statusLabels: { todo: "TODO" },
+    tasksByStatus: {
+      todo: [
+        {
+          id: "task-id",
+          name: "</script><script>window.injected = true</script>",
+          status: "todo",
+          createdAt: "2026-06-16T10:00:00",
+          updatedAt: "2026-06-16T10:00:00",
+          completedAt: null,
+          deadline: "2026/06/17",
+          path: "/tmp/todo/task-id.md",
+          fileName: "task-id.md",
+        },
+      ],
+    },
+  };
+
+  // WHEN
+  const actual = renderHtml(state);
+
+  // THEN
+  assert.doesNotMatch(actual, /<\/script><script>window\.injected/);
+  assert.match(actual, /\\u003C\/script>\\u003Cscript>window\.injected/);
+});
+
+test("serializeScriptState escapes characters that can break inline script parsing", () => {
+  // GIVEN
+  const state = {
+    value: "<tag>\u2028line\u2029break",
+  };
+
+  // WHEN
+  const actual = serializeScriptState(state);
+
+  // THEN
+  const expected = "{\"value\":\"\\u003Ctag>\\u2028line\\u2029break\"}";
+  assert.equal(actual, expected);
 });
