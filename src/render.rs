@@ -95,6 +95,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area())
     };
 
+    let main = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(outer[0]);
     let statuses = if app.done_loaded {
         let done_week_end = app
             .done_week_start
@@ -121,8 +122,14 @@ pub fn render(frame: &mut Frame, app: &App) {
         ]
     };
     let constraints = vec![Constraint::Ratio(1, statuses.len() as u32); statuses.len()];
-    let columns = Layout::horizontal(constraints).split(outer[0]);
+    let columns = Layout::horizontal(constraints).split(main[1]);
     let today = Local::now().date_naive();
+    let last_updated = Paragraph::new(format!(
+        " last updated: {}",
+        app.last_updated_at.format(TASK_DATETIME_FORMAT)
+    ))
+    .alignment(Alignment::Right);
+    frame.render_widget(last_updated, main[0]);
 
     for (column, ((status, title), area)) in statuses.iter().zip(columns.iter()).enumerate() {
         let mut selected_in_group: Option<usize> = None;
@@ -200,7 +207,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         let (message, style) = app.error_message.as_deref().map_or_else(
             || {
                 (
-                    " a: add | j/k: up/down | G/gg: bottom/top | h/l: left/right | n/N: status | d: done | [/]: done week | q: quit ",
+                    " a: add | j/k: up/down | G/gg: bottom/top | h/l: left/right | n/N: status | r: reload | d: done | [/]: done week | q: quit ",
                     Style::default(),
                 )
             },
@@ -228,6 +235,10 @@ mod tests {
             parking_loaded: false,
             done_loaded,
             done_week_start: Task::week_start(Local::now().date_naive()),
+            last_updated_at: NaiveDate::from_ymd_opt(2026, 6, 15)
+                .unwrap()
+                .and_hms_opt(10, 30, 45)
+                .unwrap(),
             open_file: None,
             error_message: None,
             tasks_dir: Task::default_base_dir(),
@@ -320,7 +331,7 @@ mod tests {
         // THEN
         let buffer = terminal.backend().buffer();
         let done_border = buffer
-            .cell((buffer.area.width - 1, 1))
+            .cell((buffer.area.width - 1, 2))
             .expect("DONE border should exist");
         assert_eq!(done_border.fg, Color::Green);
     }
@@ -329,6 +340,18 @@ mod tests {
     fn renders_navigation_help() {
         // GIVEN
         let expected = "G/gg: bottom/top";
+
+        // WHEN
+        let actual = rendered_text(false);
+
+        // THEN
+        assert!(actual.contains(expected));
+    }
+
+    #[test]
+    fn renders_last_updated_at_right_top() {
+        // GIVEN
+        let expected = "last updated: 2026/06/15 10:30:45";
 
         // WHEN
         let actual = rendered_text(false);
