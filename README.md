@@ -41,6 +41,7 @@ A TUI (Terminal User Interface) TODO management tool. `rem` stands for "remember
 | `h` / `l` | Navigate left / right between statuses |
 | `n` | Move task to next status (PARKING -> TODO -> DOING -> DONE) |
 | `N` | Move task to previous status (DONE -> DOING -> TODO -> PARKING) |
+| `r` | Reload tasks from the filesystem |
 | `d` | Toggle this week's DONE tasks |
 | `[` / `]` | Show the previous / next DONE week |
 | `Enter` | Open task file in neovim |

@@ -1,4 +1,4 @@
-use chrono::{Days, Local, NaiveDate};
+use chrono::{Days, Local, NaiveDate, NaiveDateTime};
 use crossterm::event::KeyCode;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -24,6 +24,7 @@ pub struct App {
     pub parking_loaded: bool,
     pub done_loaded: bool,
     pub done_week_start: NaiveDate,
+    pub last_updated_at: NaiveDateTime,
     pub open_file: Option<PathBuf>,
     pub error_message: Option<String>,
     pub(crate) tasks_dir: PathBuf,
@@ -48,7 +49,8 @@ impl App {
 
     /// Creates an `App` using the provided task storage directory.
     pub fn with_tasks_dir(tasks_dir: PathBuf) -> Self {
-        let done_week_start = Task::week_start(Local::now().date_naive());
+        let now = Local::now().naive_local();
+        let done_week_start = Task::week_start(now.date());
         let todo_result = Task::load_todo_from(&tasks_dir);
         let doing_result = Task::load_doing_from(&tasks_dir);
         let error_message = todo_result
@@ -70,6 +72,7 @@ impl App {
             parking_loaded: false,
             done_loaded: false,
             done_week_start,
+            last_updated_at: now,
             open_file: None,
             error_message: error_message.clone(),
             tasks_dir,
@@ -137,6 +140,7 @@ impl App {
                     KeyCode::Char('G') => self.select_last(),
                     KeyCode::Char('n') => self.forward_status(),
                     KeyCode::Char('N') => self.backward_status(),
+                    KeyCode::Char('r') => self.reload_tasks(),
                     KeyCode::Char('d') => self.toggle_done(),
                     KeyCode::Char('[') => self.show_previous_done_week(),
                     KeyCode::Char(']') => self.show_next_done_week(),
@@ -320,6 +324,63 @@ impl App {
     /// Handles post-edit cleanup after returning from neovim.
     pub fn after_edit(&mut self) {
         self.reload_selected_task();
+    }
+
+    fn reload_tasks(&mut self) {
+        let selection = self.selected_index.and_then(|index| {
+            let selected = self.tasks.get(index)?;
+            let row = self
+                .indices_for_status(selected.status)
+                .iter()
+                .position(|candidate| *candidate == index)
+                .unwrap_or(0);
+            Some((selected.id, selected.status, row))
+        });
+        let mut loaded_tasks =
+            match Self::load_visible_tasks(&self.tasks_dir, self.done_loaded, self.done_week_start)
+            {
+                Ok(tasks) => tasks,
+                Err(error) => {
+                    self.error_message = Some(
+                        self.error_with_persistent(format!("Failed to reload tasks: {error}")),
+                    );
+                    return;
+                }
+            };
+        loaded_tasks = Task::sort(loaded_tasks);
+        self.tasks = loaded_tasks;
+        self.parking_loaded = true;
+        self.last_updated_at = Local::now().naive_local();
+        self.error_message = self.persistent_error.clone();
+        self.selected_index = selection
+            .and_then(|(id, status, row)| {
+                self.tasks
+                    .iter()
+                    .position(|task| task.id == id)
+                    .or_else(|| self.nearby_selection(status, row))
+            })
+            .or_else(|| (!self.tasks.is_empty()).then_some(0));
+    }
+
+    fn load_visible_tasks(
+        tasks_dir: &std::path::Path,
+        done_loaded: bool,
+        done_week_start: NaiveDate,
+    ) -> std::io::Result<Vec<Task>> {
+        let parking_tasks = Task::load_parking_from(tasks_dir)?;
+        let todo_tasks = Task::load_todo_from(tasks_dir)?;
+        let doing_tasks = Task::load_doing_from(tasks_dir)?;
+        let done_tasks = if done_loaded {
+            Task::load_done_for_week_from(tasks_dir, done_week_start)?
+        } else {
+            Vec::new()
+        };
+        Ok(parking_tasks
+            .into_iter()
+            .chain(todo_tasks)
+            .chain(doing_tasks)
+            .chain(done_tasks)
+            .collect())
     }
 
     /// Advances the selected task's status: PARKING -> TODO -> DOING -> DONE.
@@ -571,6 +632,7 @@ mod tests {
             parking_loaded: true,
             done_loaded: false,
             done_week_start: Task::week_start(Local::now().date_naive()),
+            last_updated_at: Local::now().naive_local(),
             open_file: None,
             error_message: None,
             tasks_dir: Task::default_base_dir(),
@@ -659,6 +721,153 @@ mod tests {
         // THEN
         assert!(app.parking_loaded);
         assert_eq!(app.error_message, expected);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn reload_key_loads_parking_todo_and_doing_tasks() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let tasks = [
+            ("reloaded parking", TaskStatus::Parking),
+            ("reloaded todo", TaskStatus::Todo),
+            ("reloaded doing", TaskStatus::Doing),
+        ];
+        tasks
+            .into_iter()
+            .map(|(name, status)| {
+                let mut task = Task::new_in(name.to_string(), tasks_dir.clone());
+                task.status = status;
+                task
+            })
+            .try_for_each(|task| task.save())
+            .unwrap();
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
+
+        // WHEN
+        app.handle_key_event(KeyCode::Char('r'));
+
+        // THEN
+        let actual = app
+            .tasks
+            .iter()
+            .map(|task| task.name.as_str())
+            .collect::<Vec<_>>();
+        let expected = ["reloaded parking", "reloaded todo", "reloaded doing"];
+        assert_eq!(actual, expected);
+        assert!(app.parking_loaded);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn reload_key_keeps_done_hidden_when_done_is_not_loaded() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let mut task = Task::new_in("hidden done".to_string(), tasks_dir.clone());
+        task.status = TaskStatus::Done;
+        task.completed_at = Some(Local::now().naive_local());
+        task.save().unwrap();
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
+
+        // WHEN
+        app.handle_key_event(KeyCode::Char('r'));
+
+        // THEN
+        assert!(!app.done_loaded);
+        assert!(app.tasks.iter().all(|task| task.status != TaskStatus::Done));
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn reload_key_refreshes_visible_done_week() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
+        app.handle_key_event(KeyCode::Char('d'));
+        let mut task = Task::new_in("visible done".to_string(), tasks_dir.clone());
+        task.status = TaskStatus::Done;
+        task.completed_at = Some(app.done_week_start.and_hms_opt(12, 0, 0).unwrap());
+        task.save().unwrap();
+
+        // WHEN
+        app.handle_key_event(KeyCode::Char('r'));
+
+        // THEN
+        let actual = app
+            .tasks
+            .iter()
+            .find(|task| task.status == TaskStatus::Done)
+            .map(|task| task.name.as_str());
+        let expected = Some("visible done");
+        assert_eq!(actual, expected);
+        assert!(app.done_loaded);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn reload_key_updates_last_updated_at_after_success() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        fs::create_dir_all(&tasks_dir).unwrap();
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
+        let expected_before = NaiveDate::from_ymd_opt(2026, 6, 15)
+            .unwrap()
+            .and_hms_opt(10, 30, 45)
+            .unwrap();
+        app.last_updated_at = expected_before;
+
+        // WHEN
+        app.handle_key_event(KeyCode::Char('r'));
+
+        // THEN
+        assert!(app.last_updated_at > expected_before);
+
+        fs::remove_dir_all(tasks_dir).unwrap();
+    }
+
+    #[test]
+    fn reload_key_keeps_existing_state_when_load_fails() {
+        // GIVEN
+        let tasks_dir = temporary_tasks_dir();
+        let task = Task::new_in("existing todo".to_string(), tasks_dir.clone());
+        task.save().unwrap();
+        let mut app = App::with_tasks_dir(tasks_dir.clone());
+        let expected_tasks = app
+            .tasks
+            .iter()
+            .map(|task| (task.name.clone(), task.status))
+            .collect::<Vec<_>>();
+        let expected_selected_index = app.selected_index;
+        let expected_last_updated_at = NaiveDate::from_ymd_opt(2026, 6, 15)
+            .unwrap()
+            .and_hms_opt(10, 30, 45)
+            .unwrap();
+        app.last_updated_at = expected_last_updated_at;
+        fs::remove_dir_all(tasks_dir.join("todo")).unwrap();
+        fs::write(tasks_dir.join("todo"), "not a directory").unwrap();
+
+        // WHEN
+        app.handle_key_event(KeyCode::Char('r'));
+
+        // THEN
+        let actual_tasks = app
+            .tasks
+            .iter()
+            .map(|task| (task.name.clone(), task.status))
+            .collect::<Vec<_>>();
+        assert_eq!(actual_tasks, expected_tasks);
+        assert_eq!(app.selected_index, expected_selected_index);
+        assert_eq!(app.last_updated_at, expected_last_updated_at);
+        assert!(
+            app.error_message
+                .as_deref()
+                .unwrap()
+                .contains("Failed to reload tasks")
+        );
 
         fs::remove_dir_all(tasks_dir).unwrap();
     }
@@ -1015,6 +1224,7 @@ mod tests {
             parking_loaded: true,
             done_loaded: false,
             done_week_start: Task::week_start(Local::now().date_naive()),
+            last_updated_at: Local::now().naive_local(),
             open_file: None,
             error_message: None,
             tasks_dir,
