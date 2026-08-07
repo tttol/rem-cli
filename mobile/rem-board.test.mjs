@@ -12,6 +12,7 @@ const {
   parseYamlScalar,
   renderHtml,
   serializeScriptState,
+  transitionStatus,
 } = globalThis.remBoardTestApi;
 
 test("parseYamlScalar parses rem-compatible scalar values", () => {
@@ -112,7 +113,7 @@ test("date helpers format deadline and local timestamp values", () => {
   assert.deepEqual(actual, expected);
 });
 
-test("renderHtml includes client-side escaping and encoded payload handling", () => {
+test("renderHtml uses DOM properties instead of executable task payloads", () => {
   // GIVEN
   const state = {
     statuses: ["todo"],
@@ -138,11 +139,32 @@ test("renderHtml includes client-side escaping and encoded payload handling", ()
   const actual = renderHtml(state);
 
   // THEN
-  assert.match(actual, /const payload = encodeURIComponent\(JSON\.stringify\(task\)\)/);
-  assert.match(actual, /\.replace\(/);
-  assert.match(actual, /&amp;/);
-  assert.match(actual, /&lt;/);
-  assert.match(actual, /&quot;/);
+  assert.match(actual, /document\.createElement\("article"\)/);
+  assert.match(actual, /title\.value = task\.name/);
+  assert.match(actual, /metadata\.textContent/);
+  assert.match(actual, /board\.replaceChildren/);
+  assert.doesNotMatch(actual, /innerHTML|onclick=|onsubmit=|onchange=/);
+});
+
+test("transitionStatus returns only adjacent lifecycle states", () => {
+  // GIVEN
+  const statuses = ["parking", "todo", "doing", "done"];
+  const cases = [
+    ["parking", 1],
+    ["doing", 1],
+    ["done", -1],
+    ["parking", -1],
+    ["done", 1],
+  ];
+
+  // WHEN
+  const actual = cases.map(([status, direction]) =>
+    transitionStatus(statuses, status, direction)
+  );
+
+  // THEN
+  const expected = ["todo", "done", "doing", null, null];
+  assert.deepEqual(actual, expected);
 });
 
 test("renderHtml safely serializes task names inside inline script state", () => {
