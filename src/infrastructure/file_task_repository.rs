@@ -208,6 +208,12 @@ impl TaskRepository for FileTaskRepository {
         let old_path = self.path(current);
         let new_directory = self.status_dir(updated.status());
         let new_path = self.path(updated);
+        if old_path != new_path && new_path.try_exists()? {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("destination task already exists: {}", new_path.display()),
+            ));
+        }
         let existing = fs::read_to_string(&old_path)?;
         let content = Self::content_with_frontmatter(&existing, Self::frontmatter(updated))?;
         fs::create_dir_all(new_directory)?;
@@ -447,6 +453,43 @@ mod tests {
             fs::read_to_string(original_path).expect("original task should be restored"),
             original_content
         );
+    }
+
+    #[test]
+    fn replace_rejects_an_existing_destination_without_changing_either_file() {
+        // GIVEN
+        let directory = TestDirectory::new();
+        let now = datetime(2026, 6, 15, 9);
+        let current = Task::new("source".to_string(), now).expect("task should be valid");
+        let updated = current
+            .transitioned(StatusDirection::Forward, datetime(2026, 6, 15, 10))
+            .expect("TODO should transition to DOING");
+        let mut repository = FileTaskRepository::new(directory.path.clone());
+        repository.save(&current).expect("task should save");
+        let source_path = repository.path(&current);
+        let destination_path = repository.path(&updated);
+        let expected_source = fs::read_to_string(&source_path).expect("source should be readable");
+        let expected_destination = "existing destination";
+        fs::create_dir_all(
+            destination_path
+                .parent()
+                .expect("destination should have a parent"),
+        )
+        .expect("destination directory should be created");
+        fs::write(&destination_path, expected_destination)
+            .expect("destination task should be written");
+
+        // WHEN
+        let actual = repository.replace(&current, &updated);
+
+        // THEN
+        let error = actual.expect_err("occupied destination should be rejected");
+        let actual_source = fs::read_to_string(source_path).expect("source should remain readable");
+        let actual_destination =
+            fs::read_to_string(destination_path).expect("destination should remain readable");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(actual_source, expected_source);
+        assert_eq!(actual_destination, expected_destination);
     }
 
     #[test]
