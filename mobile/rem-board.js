@@ -1,25 +1,25 @@
 {
+  const BOOKMARK_NAME = "rem-cli-tasks";
+  const STATUSES = Object.freeze(["parking", "todo", "doing", "done"]);
+  const STATUS_LABELS = Object.freeze({
+    parking: "PARKING",
+    todo: "TODO",
+    doing: "DOING",
+    done: "DONE",
+  });
   // Starts the Scriptable app, validates the file bookmark, renders the board, and listens for UI actions.
   const main = async () => {
-    const bookmarkName = "rem-cli-tasks";
-    const statuses = ["parking", "todo", "doing", "done"];
-    const statusLabels = {
-      parking: "PARKING",
-      todo: "TODO",
-      doing: "DOING",
-      done: "DONE",
-    };
     const fileManager = FileManager.iCloud();
-    if (!fileManager.bookmarkExists(bookmarkName)) {
-      await showMissingBookmark(bookmarkName);
+    if (!fileManager.bookmarkExists(BOOKMARK_NAME)) {
+      await showMissingBookmark(BOOKMARK_NAME);
       return;
     }
-    const tasksRoot = fileManager.bookmarkedPath(bookmarkName);
-    await ensureStatusDirectories(fileManager, tasksRoot, statuses);
+    const tasksRoot = fileManager.bookmarkedPath(BOOKMARK_NAME);
+    await ensureStatusDirectories(fileManager, tasksRoot, STATUSES);
     const webView = new WebView();
-    await webView.loadHTML(renderHtml(await loadState(fileManager, tasksRoot, statuses, statusLabels)));
+    await webView.loadHTML(renderHtml(await loadState(fileManager, tasksRoot, STATUSES, STATUS_LABELS)));
     webView.present(true);
-    await runActionLoop(webView, fileManager, tasksRoot, statuses, statusLabels);
+    await runActionLoop(webView, fileManager, tasksRoot, STATUSES, STATUS_LABELS);
   };
   // Shows setup guidance when the required Scriptable file bookmark is missing.
   const showMissingBookmark = async (bookmarkName) => {
@@ -38,8 +38,7 @@
   };
   // Loads every markdown task from each status directory into board state.
   const loadState = async (fileManager, tasksRoot, statuses, statusLabels) => {
-    const tasksByStatus = {};
-    for (const status of statuses) {
+    const entries = await Promise.all(statuses.map(async (status) => {
       const directory = fileManager.joinPath(tasksRoot, status);
       const fileNames = fileManager.listContents(directory);
       const tasks = await Promise.all(
@@ -47,9 +46,12 @@
           .filter((fileName) => fileName.endsWith(".md"))
           .map(async (fileName) => loadTask(fileManager, directory, fileName, status))
       );
-      tasksByStatus[status] = tasks.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-    }
-    return { tasksByStatus, statusLabels, statuses };
+      const sortedTasks = tasks
+        .slice()
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+      return [status, sortedTasks];
+    }));
+    return { tasksByStatus: Object.fromEntries(entries), statusLabels, statuses };
   };
   // Reads one task file and converts its frontmatter into a UI task object.
   const loadTask = async (fileManager, directory, fileName, status) => {
@@ -98,16 +100,14 @@
   };
   // Waits for actions from the WebView, applies them to files, and refreshes the board state.
   const runActionLoop = async (webView, fileManager, tasksRoot, statuses, statusLabels) => {
-    let isRunning = true;
-    while (isRunning) {
+    while (true) {
       const action = await waitForAction(webView);
       if (!action || action.type === "close") {
-        isRunning = false;
-      } else {
-        await handleAction(action, fileManager, tasksRoot, statuses);
-        const state = await loadState(fileManager, tasksRoot, statuses, statusLabels);
-        await webView.evaluateJavaScript(`window.remSetState(${JSON.stringify(state)})`, false);
+        return;
       }
+      await handleAction(action, fileManager, tasksRoot, statuses);
+      const state = await loadState(fileManager, tasksRoot, statuses, statusLabels);
+      await webView.evaluateJavaScript(`window.remSetState(${JSON.stringify(state)})`, false);
     }
   };
   // Bridges the WebView action queue back to Scriptable through completion().
@@ -124,16 +124,17 @@
       })();`,
       true
     );
-  // Dispatches a WebView action to the corresponding file operation.
+  // Dispatches supported WebView actions through an extensible action registry.
+  const actionHandlers = Object.freeze({
+    add: (action, fileManager, tasksRoot) => addTask(fileManager, tasksRoot, action.name || ""),
+    rename: (action, fileManager) => renameTask(fileManager, action.path, action.name || ""),
+    move: (action, fileManager, tasksRoot, statuses) =>
+      moveTask(fileManager, tasksRoot, statuses, action),
+  });
   const handleAction = async (action, fileManager, tasksRoot, statuses) => {
-    if (action.type === "add") {
-      await addTask(fileManager, tasksRoot, action.name || "");
-    }
-    if (action.type === "rename") {
-      await renameTask(fileManager, action.path, action.name || "");
-    }
-    if (action.type === "move") {
-      await moveTask(fileManager, tasksRoot, statuses, action);
+    const handler = actionHandlers[action.type];
+    if (handler) {
+      await handler(action, fileManager, tasksRoot, statuses);
     }
   };
   // Creates a new TODO markdown file with rem-compatible frontmatter.
@@ -169,14 +170,20 @@
     };
     fileManager.writeString(path, buildTaskContent(updated, parsed.body));
   };
+  // Returns the adjacent status for a valid lifecycle move.
+  const transitionStatus = (statuses, status, direction) => {
+    const currentIndex = statuses.indexOf(status);
+    const nextIndex = currentIndex + direction;
+    return currentIndex >= 0 && nextIndex >= 0 && nextIndex < statuses.length
+      ? statuses[nextIndex]
+      : null;
+  };
   // Moves a task between status directories and updates completion metadata when needed.
   const moveTask = async (fileManager, tasksRoot, statuses, action) => {
-    const currentIndex = statuses.indexOf(action.status);
-    const nextIndex = currentIndex + action.direction;
-    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= statuses.length) {
+    const newStatus = transitionStatus(statuses, action.status, action.direction);
+    if (!newStatus) {
       return;
     }
-    const newStatus = statuses[nextIndex];
     const destination = fileManager.joinPath(fileManager.joinPath(tasksRoot, newStatus), action.fileName);
     if (fileManager.fileExists(destination)) {
       throw new Error(`Destination already exists: ${destination}`);
@@ -381,7 +388,7 @@ input {
 </head>
 <body>
 <div class="app">
-  <form class="toolbar" onsubmit="addTask(event)">
+  <form id="new-task-form" class="toolbar">
     <input id="new-task" type="text" placeholder="New task" autocomplete="off">
     <button type="submit">Add</button>
   </form>
@@ -400,53 +407,71 @@ const sendAction = (action) => {
   }
 };
 // Handles the add form and sends a new task request to Scriptable.
-const addTask = (event) => {
+document.getElementById("new-task-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const input = document.getElementById("new-task");
   sendAction({ type: "add", name: input.value });
   input.value = "";
+});
+// Creates one move button with its action bound without inline executable payloads.
+const createMoveButton = (task, direction, disabled, label) => {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.disabled = disabled;
+  button.addEventListener("click", () => sendAction({ type: "move", ...task, direction }));
+  return button;
 };
-// Decodes a task payload embedded in an inline event handler.
-const decodeTask = (payload) => JSON.parse(decodeURIComponent(payload));
-// Sends a status move request to Scriptable.
-const moveTask = (payload, direction) => sendAction({ type: "move", ...decodeTask(payload), direction });
-// Sends a title update request to Scriptable.
-const renameTask = (payload, value) => sendAction({ type: "rename", path: decodeTask(payload).path, name: value });
-// Builds the HTML for a single task card.
-const taskTemplate = (task, status, index, statuses) => {
+// Builds one task card using DOM properties for user-controlled values.
+const createTaskElement = (task, status, index, statuses) => {
   const canMoveBack = index > 0;
   const canMoveForward = index < statuses.length - 1;
-  const payload = encodeURIComponent(JSON.stringify(task));
-  return \`
-    <article class="task" data-status="\${status}">
-      <input class="task-title" value="\${escapeHtml(task.name)}" onchange="renameTask('\${payload}', this.value)">
-      <div class="meta">Deadline: \${escapeHtml(task.deadline || "-")}</div>
-      <div class="actions">
-        <button type="button" \${canMoveBack ? "" : "disabled"} onclick="moveTask('\${payload}', -1)">←</button>
-        <button type="button" \${canMoveForward ? "" : "disabled"} onclick="moveTask('\${payload}', 1)">→</button>
-      </div>
-    </article>\`;
+  const article = document.createElement("article");
+  article.className = "task";
+  article.dataset.status = status;
+  const title = document.createElement("input");
+  title.className = "task-title";
+  title.value = task.name;
+  title.addEventListener("change", () =>
+    sendAction({ type: "rename", path: task.path, name: title.value })
+  );
+  const metadata = document.createElement("div");
+  metadata.className = "meta";
+  metadata.textContent = "Deadline: " + (task.deadline || "-");
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.append(
+    createMoveButton(task, -1, !canMoveBack, "←"),
+    createMoveButton(task, 1, !canMoveForward, "→")
+  );
+  article.append(title, metadata, actions);
+  return article;
 };
-// Escapes user-controlled text before inserting it into the DOM.
-const escapeHtml = (value) => String(value)
-  .replace(/&/g, "&amp;")
-  .replace(/</g, "&lt;")
-  .replace(/>/g, "&gt;")
-  .replace(/"/g, "&quot;");
+// Builds one status column from trusted labels and DOM-safe task elements.
+const createColumnElement = (nextState, status, index) => {
+  const tasks = nextState.tasksByStatus[status] || [];
+  const section = document.createElement("section");
+  section.className = "column";
+  const header = document.createElement("header");
+  header.className = "column-header";
+  const label = document.createElement("span");
+  label.textContent = nextState.statusLabels[status];
+  const count = document.createElement("span");
+  count.textContent = String(tasks.length);
+  header.append(label, count);
+  section.append(
+    header,
+    ...tasks.map((task) => createTaskElement(task, status, index, nextState.statuses))
+  );
+  return section;
+};
 // Replaces the board contents with the latest Scriptable-provided state.
 const render = (nextState) => {
   const board = document.getElementById("board");
-  board.innerHTML = nextState.statuses.map((status, index) => {
-    const tasks = nextState.tasksByStatus[status] || [];
-    return \`
-      <section class="column">
-        <header class="column-header">
-          <span>\${nextState.statusLabels[status]}</span>
-          <span>\${tasks.length}</span>
-        </header>
-        \${tasks.map((task) => taskTemplate(task, status, index, nextState.statuses)).join("")}
-      </section>\`;
-  }).join("");
+  const columns = nextState.statuses.map((status, index) =>
+    createColumnElement(nextState, status, index)
+  );
+  board.replaceChildren(...columns);
 };
 window.remSetState = (nextState) => render(nextState);
 render(state);
@@ -462,6 +487,7 @@ render(state);
     parseYamlScalar,
     renderHtml,
     serializeScriptState,
+    transitionStatus,
   };
   if (typeof process === "undefined" || !process.versions?.node) {
     await main();

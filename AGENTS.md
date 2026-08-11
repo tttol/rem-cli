@@ -21,10 +21,13 @@ cargo fmt            # Format code
 
 - **TUI Framework**: ratatui (v0.30.0) with crossterm (v0.29.0) backend
 - **Source Files**:
-  - `src/main.rs`: Terminal setup/cleanup, event loop, neovim integration
-  - `src/app.rs`: Application state (`App` struct), input handling, mode management
-  - `src/render.rs`: UI rendering logic (status columns, task lists, input field)
-  - `src/task.rs`: Task data model, filesystem I/O, status management
+  - `src/main.rs`: Thin binary entry point and process exit status
+  - `src/lib.rs`: Composition root and terminal event loop; the crate's only public API is `run()`
+  - `src/domain/task.rs`: Immutable task model, lifecycle transitions, sorting, and DONE week ranges
+  - `src/application/app.rs`: Application state, input commands/effects, selection, and task workflow policy
+  - `src/application/mod.rs`: Narrow `TaskRepository` port owned by the application layer
+  - `src/infrastructure/`: Configuration loading and the filesystem/YAML repository adapter
+  - `src/presentation/`: Read-only Ratatui rendering and terminal/neovim lifecycle management
 
 ## Data Storage
 
@@ -58,9 +61,11 @@ Tasks are stored as markdown files under `~/.rem-cli/tasks/` with directory-base
 - `j` / `k` move within a status column, while `h` / `l` move between non-empty columns
 - `n` / `N` move the selected task forward or backward through the status lifecycle
 - Neovim integration: Enter key temporarily exits TUI, opens task file in nvim, then restores TUI
-- `open_file: Option<PathBuf>` is used as a message-passing mechanism between `App` (state) and `main` (terminal control)
-- After returning from neovim, `App::after_edit()` reloads the task metadata from disk
-- `Task::reload()` re-reads a task's frontmatter from its markdown file without changing status
+- `AppEffect` passes quit and open-task requests from application policy to the runtime boundary
+- After returning from neovim, `App::after_edit()` reloads task metadata through `TaskRepository`
+- Application and rendering code receive explicit wall-clock values; filesystem and terminal side effects remain in adapters
+- Task selection is identity-based and can explicitly represent an empty selected status column
+- Application state is private and rendering consumes an immutable `AppView`
 - Task names are wrapped to fit each status column (`wrap_task_name`)
 - Editing mode supports cursor movement, insertion, deletion, and horizontal scrolling
 - `--version` / `-V` flag prints version and exits without entering TUI
