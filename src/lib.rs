@@ -4,7 +4,7 @@ mod infrastructure;
 mod presentation;
 
 #[cfg(test)]
-mod integration_tests;
+mod internal_integration_tests;
 
 use crate::application::app::{App, AppEffect, EventTime};
 use crate::infrastructure::file_task_repository::FileTaskRepository;

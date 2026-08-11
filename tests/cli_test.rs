@@ -1,3 +1,5 @@
+//! Black-box tests for the public `rem` executable contract.
+
 use std::process::Command;
 
 #[test]

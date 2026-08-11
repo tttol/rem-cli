@@ -1,3 +1,5 @@
+//! Internal cross-layer tests for crate-private application and infrastructure components.
+
 use crate::application::app::{App, EventTime};
 use crate::infrastructure::file_task_repository::FileTaskRepository;
 use chrono::{NaiveDate, NaiveDateTime};
