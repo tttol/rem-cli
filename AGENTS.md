@@ -25,7 +25,7 @@ cargo fmt            # Format code
   - `src/lib.rs`: Composition root and terminal event loop; the crate's only public API is `run()`
   - `src/domain/task.rs`: Immutable task model, lifecycle transitions, sorting, and DONE week ranges
   - `src/application/app.rs`: Application state, input commands/effects, selection, and task workflow policy
-  - `src/application/mod.rs`: Narrow `TaskRepository` port owned by the application layer
+  - `src/application.rs`: Narrow `TaskRepository` port owned by the application layer
   - `src/infrastructure/`: Configuration loading and the filesystem/YAML repository adapter
   - `src/presentation/`: Read-only Ratatui rendering and terminal/neovim lifecycle management
 
